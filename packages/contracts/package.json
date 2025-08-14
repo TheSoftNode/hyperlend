@@ -1,0 +1,67 @@
+{
+  "name": "hyperlend",
+  "version": "1.0.0",
+  "description": "Ultra-Fast Lending with Real-Time Liquidations",
+  "homepage": "https://github.com/TheSoftNode/hyperlend#readme",
+  "bugs": {
+    "url": "https://github.com/TheSoftNode/hyperlend/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/TheSoftNode/hyperlend.git"
+  },
+  "license": "ISC",
+  "author": "Theophilus Uchechukwu",
+  "type": "commonjs",
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "deploy": "node scripts/deploy.js",
+    "verify": "node scripts/verify.js",
+    "setup": "node scripts/setup.js",
+    "clean": "hardhat clean && rm -rf deployments",
+    "size": "hardhat size-contracts",
+    "coverage": "hardhat coverage",
+    "lint": "solhint 'contracts/**/*.sol'",
+    "lint:fix": "solhint 'contracts/**/*.sol' --fix",
+    "flatten": "hardhat flatten",
+    "gas-report": "REPORT_GAS=true hardhat test"
+  },
+  "keywords": [
+    "Somnia",
+    "1M+ TPS",
+    "solidity",
+    "smart-contracts",
+    "soulbound-tokens",
+    "talent",
+    "blockchain",
+    "defi"
+  ],
+  "dependencies": {
+    "@openzeppelin/contracts": "^4.9.3",
+    "dotenv": "^16.3.1",
+    "ethers": "^5.7.2"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^2.0.2",
+    "@nomiclabs/hardhat-ethers": "^2.2.3",
+    "@nomiclabs/hardhat-waffle": "^2.0.6",
+    "@typechain/ethers-v5": "^10.2.1",
+    "@typechain/hardhat": "^6.1.6",
+    "@types/chai": "^4.3.5",
+    "@types/mocha": "^10.0.1",
+    "chai": "^4.3.8",
+    "ethereum-waffle": "^3.4.4",
+    "hardhat": "^2.17.1",
+    "hardhat-contract-sizer": "^2.10.0",
+    "hardhat-gas-reporter": "^1.0.9",
+    "solhint": "^3.6.2",
+    "solidity-coverage": "^0.8.4",
+    "typechain": "^8.3.1",
+    "typescript": "^5.1.6"
+  }
+}
