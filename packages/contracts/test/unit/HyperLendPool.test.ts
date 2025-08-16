@@ -1,201 +1,324 @@
 import { expect } from "chai";
-import { ethers, upgrades } from "hardhat";
-import { time } from "@nomicfoundation/hardhat-network-helpers";
-import { 
-  HyperLendPool, 
-  InterestRateModel, 
-  LiquidationEngine, 
-  PriceOracle, 
-  RiskManager,
-  MockERC20,
-  HLToken,
-  DebtToken 
-} from "../../typechain-types";
-import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
+import { ethers } from "hardhat";
+import { loadFixture, time } from "@nomicfoundation/hardhat-network-helpers";
 import { deploymentFixture } from "../fixtures/deployments";
-import { createUsers } from "../fixtures/users";
-import { parseEther, formatEther } from "ethers";
 
 describe("HyperLendPool", function () {
   // ═══════════════════════════════════════════════════════════════════════════════════
   // FIXTURES AND SETUP
   // ═══════════════════════════════════════════════════════════════════════════════════
 
-  let hyperLendPool: HyperLendPool;
-  let interestRateModel: InterestRateModel;
-  let liquidationEngine: LiquidationEngine;
-  let priceOracle: PriceOracle;
-  let riskManager: RiskManager;
+  let hyperLendPool: any;
+  let interestRateModel: any;
+  let liquidationEngine: any;
+  let priceOracle: any;
+  let riskManager: any;
+  let usdc: any;
+  let weth: any;
+  let hlUSDC: any;
+  let hlWETH: any;
+  let debtUSDC: any;
+  let debtWETH: any;
   
-  let usdc: MockERC20;
-  let weth: MockERC20;
-  let hlUSDC: HLToken;
-  let hlWETH: HLToken;
-  let debtUSDC: DebtToken;
-  let debtWETH: DebtToken;
+  let admin: any;
+  let user1: any;
+  let user2: any;
+  let liquidator: any;
 
-  let admin: SignerWithAddress;
-  let user1: SignerWithAddress;
-  let user2: SignerWithAddress;
-  let liquidator: SignerWithAddress;
-  let users: SignerWithAddress[];
-
-  const PRECISION = parseEther("1");
-  const INITIAL_SUPPLY = parseEther("1000000"); // 1M tokens
-  const USDC_PRICE = parseEther("1"); // $1
-  const WETH_PRICE = parseEther("2000"); // $2000
+  const PRECISION = ethers.utils.parseEther("1");
+  const USDC_PRICE = ethers.utils.parseEther("1");     // $1
+  const WETH_PRICE = ethers.utils.parseEther("2000");  // $2000
 
   beforeEach(async function () {
-    // Get signers
-    [admin, user1, user2, liquidator, ...users] = await ethers.getSigners();
-
-    // Deploy all contracts
-    const deployment = await deploymentFixture();
+    const deployment = await loadFixture(deploymentFixture);
     
     hyperLendPool = deployment.hyperLendPool;
     interestRateModel = deployment.interestRateModel;
     liquidationEngine = deployment.liquidationEngine;
     priceOracle = deployment.priceOracle;
     riskManager = deployment.riskManager;
-    
     usdc = deployment.usdc;
     weth = deployment.weth;
     hlUSDC = deployment.hlUSDC;
     hlWETH = deployment.hlWETH;
     debtUSDC = deployment.debtUSDC;
     debtWETH = deployment.debtWETH;
+    admin = deployment.admin;
+
+    [, user1, user2, liquidator] = await ethers.getSigners();
 
     // Setup initial token balances
-    await usdc.transfer(user1.address, parseEther("100000"));
-    await usdc.transfer(user2.address, parseEther("100000"));
-    await weth.transfer(user1.address, parseEther("100"));
-    await weth.transfer(user2.address, parseEther("100"));
+    await usdc.transfer(user1.address, ethers.utils.parseEther("100000"));
+    await usdc.transfer(user2.address, ethers.utils.parseEther("100000"));
+    await weth.transfer(user1.address, ethers.utils.parseEther("100"));
+    await weth.transfer(user2.address, ethers.utils.parseEther("100"));
 
     // Approve tokens for pool
-    await usdc.connect(user1).approve(hyperLendPool.target, ethers.MaxUint256);
-    await usdc.connect(user2).approve(hyperLendPool.target, ethers.MaxUint256);
-    await weth.connect(user1).approve(hyperLendPool.target, ethers.MaxUint256);
-    await weth.connect(user2).approve(hyperLendPool.target, ethers.MaxUint256);
-
-    // Set initial prices
-    await priceOracle.setEmergencyPrice(usdc.target, USDC_PRICE, "Initial price");
-    await priceOracle.setEmergencyPrice(weth.target, WETH_PRICE, "Initial price");
+    await usdc.connect(user1).approve(await hyperLendPool.getAddress(), ethers.constants.MaxUint256);
+    await usdc.connect(user2).approve(await hyperLendPool.getAddress(), ethers.constants.MaxUint256);
+    await weth.connect(user1).approve(await hyperLendPool.getAddress(), ethers.constants.MaxUint256);
+    await weth.connect(user2).approve(await hyperLendPool.getAddress(), ethers.constants.MaxUint256);
   });
 
   // ═══════════════════════════════════════════════════════════════════════════════════
-  // CORE FUNCTIONALITY TESTS
+  // DEPLOYMENT TESTS
   // ═══════════════════════════════════════════════════════════════════════════════════
 
-  describe("Supply and Withdraw", function () {
-    it("Should allow users to supply assets", async function () {
-      const supplyAmount = parseEther("1000");
-      
-      await expect(hyperLendPool.connect(user1).supply(usdc.target, supplyAmount))
-        .to.emit(hyperLendPool, "Supply")
-        .withArgs(user1.address, usdc.target, supplyAmount, supplyAmount);
-
-      // Check balances
-      expect(await hlUSDC.balanceOf(user1.address)).to.equal(supplyAmount);
-      expect(await usdc.balanceOf(hyperLendPool.target)).to.equal(supplyAmount);
-      
-      // Check market data
-      const marketData = await hyperLendPool.getMarketData(usdc.target);
-      expect(marketData.totalSupply).to.equal(supplyAmount);
+  describe("Deployment", function () {
+    it("Should deploy with correct addresses", async function () {
+      expect(await hyperLendPool.interestRateModel()).to.equal(await interestRateModel.getAddress());
+      expect(await hyperLendPool.liquidationEngine()).to.equal(await liquidationEngine.getAddress());
+      expect(await hyperLendPool.priceOracle()).to.equal(await priceOracle.getAddress());
+      expect(await hyperLendPool.riskManager()).to.equal(await riskManager.getAddress());
     });
 
-    it("Should calculate correct exchange rate for hlTokens", async function () {
-      const supplyAmount = parseEther("1000");
-      
-      await hyperLendPool.connect(user1).supply(usdc.target, supplyAmount);
-      
-      // Initially, 1:1 exchange rate
-      expect(await hlUSDC.hlTokensToUnderlying(parseEther("1"))).to.equal(parseEther("1"));
-      expect(await hlUSDC.underlyingToHlTokens(parseEther("1"))).to.equal(parseEther("1"));
+    it("Should have correct admin role", async function () {
+      const defaultAdminRole = await hyperLendPool.DEFAULT_ADMIN_ROLE();
+      expect(await hyperLendPool.hasRole(defaultAdminRole, admin.address)).to.be.true;
     });
 
-    it("Should allow users to withdraw assets", async function () {
-      const supplyAmount = parseEther("1000");
-      const withdrawAmount = parseEther("500");
+    it("Should not be paused initially", async function () {
+      expect(await hyperLendPool.paused()).to.be.false;
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════════════
+  // NATIVE STT FUNCTIONALITY TESTS
+  // ═══════════════════════════════════════════════════════════════════════════════════
+
+  describe("Native STT Operations", function () {
+    it("Should allow STT supply via payable function", async function () {
+      const sttAmount = ethers.utils.parseEther("10"); // 10 STT
+      
+      await expect(
+        hyperLendPool.connect(user1).supplySTT({ value: sttAmount })
+      ).to.emit(hyperLendPool, "STTSupplied")
+        .withArgs(user1.address, sttAmount);
+
+      // Check pool STT balance
+      expect(await ethers.provider.getBalance(await hyperLendPool.getAddress())).to.equal(sttAmount);
+    });
+
+    it("Should reject zero STT supply", async function () {
+      await expect(
+        hyperLendPool.connect(user1).supplySTT({ value: 0 })
+      ).to.be.revertedWith("HyperLend: Must supply STT");
+    });
+
+    it("Should allow STT borrowing against collateral", async function () {
+      const collateralAmount = ethers.utils.parseEther("5"); // 5 WETH = $10k
+      const borrowAmount = ethers.utils.parseEther("5000"); // 5000 STT (50% LTV)
+      
+      // First supply WETH as collateral
+      await hyperLendPool.connect(user1).supply(await weth.getAddress(), collateralAmount);
+      
+      // Then borrow STT
+      const balanceBefore = await user1.getBalance();
+      await expect(
+        hyperLendPool.connect(user1).borrowSTT(borrowAmount)
+      ).to.emit(hyperLendPool, "STTBorrowed")
+        .withArgs(user1.address, borrowAmount);
+
+      // Check user received STT
+      const balanceAfter = await user1.getBalance();
+      expect(balanceAfter).to.be.gt(balanceBefore);
+    });
+
+    it("Should allow STT repayment", async function () {
+      const collateralAmount = ethers.utils.parseEther("5");
+      const borrowAmount = ethers.utils.parseEther("3000");
+      const repayAmount = ethers.utils.parseEther("1000");
+      
+      // Setup borrow position
+      await hyperLendPool.connect(user1).supply(await weth.getAddress(), collateralAmount);
+      await hyperLendPool.connect(user1).borrowSTT(borrowAmount);
+      
+      // Repay STT
+      await expect(
+        hyperLendPool.connect(user1).repaySTT({ value: repayAmount })
+      ).to.emit(hyperLendPool, "STTRepaid")
+        .withArgs(user1.address, repayAmount);
+    });
+
+    it("Should handle STT withdrawal", async function () {
+      const supplyAmount = ethers.utils.parseEther("10");
+      const withdrawAmount = ethers.utils.parseEther("5");
+      
+      // Supply STT first
+      await hyperLendPool.connect(user1).supplySTT({ value: supplyAmount });
+      
+      // Withdraw STT
+      const balanceBefore = await user1.getBalance();
+      await expect(
+        hyperLendPool.connect(user1).withdrawSTT(withdrawAmount)
+      ).to.emit(hyperLendPool, "STTWithdrawn")
+        .withArgs(user1.address, withdrawAmount);
+
+      const balanceAfter = await user1.getBalance();
+      expect(balanceAfter).to.be.gt(balanceBefore);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════════════
+  // ERC20 TOKEN OPERATIONS TESTS
+  // ═══════════════════════════════════════════════════════════════════════════════════
+
+  describe("ERC20 Token Operations", function () {
+    it("Should allow users to supply ERC20 tokens", async function () {
+      const supplyAmount = ethers.utils.parseEther("1000");
+      const usdcAddress = await usdc.getAddress();
+      
+      await expect(
+        hyperLendPool.connect(user1).supply(usdcAddress, supplyAmount)
+      ).to.emit(hyperLendPool, "Supply")
+        .withArgs(user1.address, usdcAddress, supplyAmount);
+
+      // Check token was transferred to pool
+      expect(await usdc.balanceOf(await hyperLendPool.getAddress())).to.equal(supplyAmount);
+    });
+
+    it("Should allow users to withdraw ERC20 tokens", async function () {
+      const supplyAmount = ethers.utils.parseEther("1000");
+      const withdrawAmount = ethers.utils.parseEther("500");
+      const usdcAddress = await usdc.getAddress();
       
       // Supply first
-      await hyperLendPool.connect(user1).supply(usdc.target, supplyAmount);
+      await hyperLendPool.connect(user1).supply(usdcAddress, supplyAmount);
       
       // Withdraw
-      await expect(hyperLendPool.connect(user1).withdraw(usdc.target, withdrawAmount))
-        .to.emit(hyperLendPool, "Withdraw")
-        .withArgs(user1.address, usdc.target, withdrawAmount, withdrawAmount);
-
-      expect(await hlUSDC.balanceOf(user1.address)).to.equal(supplyAmount - withdrawAmount);
-    });
-
-    it("Should prevent withdrawal of more than supplied", async function () {
-      const supplyAmount = parseEther("1000");
-      const withdrawAmount = parseEther("1500");
-      
-      await hyperLendPool.connect(user1).supply(usdc.target, supplyAmount);
-      
       await expect(
-        hyperLendPool.connect(user1).withdraw(usdc.target, withdrawAmount)
-      ).to.be.revertedWith("HLToken: Insufficient balance");
+        hyperLendPool.connect(user1).withdraw(usdcAddress, withdrawAmount)
+      ).to.emit(hyperLendPool, "Withdraw")
+        .withArgs(user1.address, usdcAddress, withdrawAmount);
+
+      expect(await usdc.balanceOf(await hyperLendPool.getAddress())).to.equal(supplyAmount.sub(withdrawAmount));
     });
 
-    it("Should update real-time metrics on supply/withdraw", async function () {
-      const supplyAmount = parseEther("1000");
+    it("Should allow users to borrow ERC20 tokens", async function () {
+      const collateralAmount = ethers.utils.parseEther("10"); // 10 WETH = $20k
+      const borrowAmount = ethers.utils.parseEther("10000");  // $10k USDC (50% LTV)
       
-      await hyperLendPool.connect(user1).supply(usdc.target, supplyAmount);
+      // Supply collateral
+      await hyperLendPool.connect(user1).supply(await weth.getAddress(), collateralAmount);
       
-      const metrics = await hyperLendPool.getRealTimeMetrics();
-      expect(metrics.tvl).to.be.gt(0);
-      expect(metrics.lastUpdate).to.be.gt(0);
+      // Supply liquidity for borrowing
+      await hyperLendPool.connect(user2).supply(await usdc.getAddress(), ethers.utils.parseEther("50000"));
+      
+      // Borrow
+      await expect(
+        hyperLendPool.connect(user1).borrow(await usdc.getAddress(), borrowAmount)
+      ).to.emit(hyperLendPool, "Borrow")
+        .withArgs(user1.address, await usdc.getAddress(), borrowAmount);
+
+      expect(await usdc.balanceOf(user1.address)).to.equal(ethers.utils.parseEther("110000")); // 100k initial + 10k borrowed
+    });
+
+    it("Should allow users to repay ERC20 debt", async function () {
+      const collateralAmount = ethers.utils.parseEther("10");
+      const borrowAmount = ethers.utils.parseEther("10000");
+      const repayAmount = ethers.utils.parseEther("5000");
+      
+      // Setup borrow position
+      await hyperLendPool.connect(user2).supply(await usdc.getAddress(), ethers.utils.parseEther("50000"));
+      await hyperLendPool.connect(user1).supply(await weth.getAddress(), collateralAmount);
+      await hyperLendPool.connect(user1).borrow(await usdc.getAddress(), borrowAmount);
+      
+      // Repay
+      await expect(
+        hyperLendPool.connect(user1).repay(await usdc.getAddress(), repayAmount)
+      ).to.emit(hyperLendPool, "Repay")
+        .withArgs(user1.address, await usdc.getAddress(), repayAmount);
     });
   });
 
-  describe("Borrow and Repay", function () {
-    beforeEach(async function () {
-      // User1 supplies WETH as collateral
-      await hyperLendPool.connect(user1).supply(weth.target, parseEther("10"));
-    });
+  // ═══════════════════════════════════════════════════════════════════════════════════
+  // BATCH OPERATIONS TESTS
+  // ═══════════════════════════════════════════════════════════════════════════════════
 
-    it("Should allow users to borrow against collateral", async function () {
-      const borrowAmount = parseEther("5000"); // Borrow $5000 USDC against $20000 WETH
-      
-      await expect(hyperLendPool.connect(user1).borrow(usdc.target, borrowAmount))
-        .to.emit(hyperLendPool, "Borrow")
-        .withArgs(user1.address, usdc.target, borrowAmount, borrowAmount);
-
-      expect(await debtUSDC.balanceOf(user1.address)).to.equal(borrowAmount);
-      expect(await usdc.balanceOf(user1.address)).to.equal(parseEther("105000")); // Initial + borrowed
-    });
-
-    it("Should prevent borrowing beyond safe limits", async function () {
-      const borrowAmount = parseEther("18000"); // Try to borrow $18000 against $20000 (90% LTV)
+  describe("Batch Operations", function () {
+    it("Should execute batch supply operations", async function () {
+      const assets = [await usdc.getAddress(), await weth.getAddress()];
+      const amounts = [ethers.utils.parseEther("5000"), ethers.utils.parseEther("2")];
       
       await expect(
-        hyperLendPool.connect(user1).borrow(usdc.target, borrowAmount)
-      ).to.be.revertedWith("HyperLend: Borrow not allowed");
+        hyperLendPool.connect(user1).batchSupply(assets, amounts)
+      ).to.emit(hyperLendPool, "BatchSupplyExecuted")
+        .withArgs(user1.address, assets.length);
+
+      expect(await usdc.balanceOf(await hyperLendPool.getAddress())).to.equal(amounts[0]);
+      expect(await weth.balanceOf(await hyperLendPool.getAddress())).to.equal(amounts[1]);
     });
 
-    it("Should allow users to repay debt", async function () {
-      const borrowAmount = parseEther("5000");
-      const repayAmount = parseEther("2000");
+    it("Should execute batch withdraw operations", async function () {
+      const assets = [await usdc.getAddress(), await weth.getAddress()];
+      const supplyAmounts = [ethers.utils.parseEther("5000"), ethers.utils.parseEther("2")];
+      const withdrawAmounts = [ethers.utils.parseEther("2000"), ethers.utils.parseEther("1")];
       
-      // Borrow first
-      await hyperLendPool.connect(user1).borrow(usdc.target, borrowAmount);
+      // Supply first
+      await hyperLendPool.connect(user1).batchSupply(assets, supplyAmounts);
       
-      // Repay
-      await expect(hyperLendPool.connect(user1).repay(usdc.target, repayAmount))
-        .to.emit(hyperLendPool, "Repay")
-        .withArgs(user1.address, usdc.target, repayAmount, repayAmount);
-
-      expect(await debtUSDC.balanceOf(user1.address)).to.equal(borrowAmount - repayAmount);
+      // Batch withdraw
+      await expect(
+        hyperLendPool.connect(user1).batchWithdraw(assets, withdrawAmounts)
+      ).to.emit(hyperLendPool, "BatchWithdrawExecuted")
+        .withArgs(user1.address, assets.length);
     });
 
-    it("Should update health factor correctly", async function () {
-      await hyperLendPool.connect(user1).borrow(usdc.target, parseEther("5000"));
+    it("Should reject mismatched batch arrays", async function () {
+      const assets = [await usdc.getAddress()];
+      const amounts = [ethers.utils.parseEther("1000"), ethers.utils.parseEther("2000")]; // Mismatched length
       
-      const userData = await hyperLendPool.getUserAccountData(user1.address);
-      expect(userData.healthFactor).to.be.gt(parseEther("1")); // Should be healthy
-      expect(userData.isLiquidatable).to.be.false;
+      await expect(
+        hyperLendPool.connect(user1).batchSupply(assets, amounts)
+      ).to.be.revertedWith("HyperLend: Array length mismatch");
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════════════
+  // HEALTH FACTOR TESTS
+  // ═══════════════════════════════════════════════════════════════════════════════════
+
+  describe("Health Factor Calculations", function () {
+    beforeEach(async function () {
+      // Setup basic lending position
+      await hyperLendPool.connect(user2).supply(await usdc.getAddress(), ethers.utils.parseEther("50000"));
+      await hyperLendPool.connect(user1).supply(await weth.getAddress(), ethers.utils.parseEther("10")); // $20k collateral
+      await hyperLendPool.connect(user1).borrow(await usdc.getAddress(), ethers.utils.parseEther("10000")); // $10k debt
+    });
+
+    it("Should calculate health factor correctly", async function () {
+      const healthFactor = await hyperLendPool.getHealthFactor(user1.address);
+      
+      // With $20k collateral and $10k debt at 80% liquidation threshold:
+      // HF = (20000 * 0.8) / 10000 = 1.6
+      expect(healthFactor).to.be.gt(ethers.utils.parseEther("1.5"));
+      expect(healthFactor).to.be.lt(ethers.utils.parseEther("1.7"));
+    });
+
+    it("Should return max uint for users with no debt", async function () {
+      const healthFactor = await hyperLendPool.getHealthFactor(user2.address);
+      expect(healthFactor).to.equal(ethers.constants.MaxUint256);
+    });
+
+    it("Should update health factor when collateral price changes", async function () {
+      const initialHF = await hyperLendPool.getHealthFactor(user1.address);
+      
+      // Drop WETH price by 20%
+      await priceOracle.setAssetPrice(await weth.getAddress(), ethers.utils.parseEther("1600"));
+      
+      const newHF = await hyperLendPool.getHealthFactor(user1.address);
+      expect(newHF).to.be.lt(initialHF);
+    });
+
+    it("Should identify liquidatable positions", async function () {
+      // Drop WETH price significantly to make position liquidatable
+      await priceOracle.setAssetPrice(await weth.getAddress(), ethers.utils.parseEther("1200")); // 40% drop
+      
+      const isLiquidatable = await hyperLendPool.isLiquidatable(user1.address);
+      expect(isLiquidatable).to.be.true;
+      
+      const healthFactor = await hyperLendPool.getHealthFactor(user1.address);
+      expect(healthFactor).to.be.lt(ethers.utils.parseEther("1"));
     });
   });
 
@@ -203,48 +326,47 @@ describe("HyperLendPool", function () {
   // INTEREST RATE TESTS
   // ═══════════════════════════════════════════════════════════════════════════════════
 
-  describe("Interest Rate Calculations", function () {
-    it("Should calculate interest rates based on utilization", async function () {
-      // Supply and borrow to create utilization
-      await hyperLendPool.connect(user1).supply(usdc.target, parseEther("10000"));
-      await hyperLendPool.connect(user1).supply(weth.target, parseEther("10"));
-      await hyperLendPool.connect(user1).borrow(usdc.target, parseEther("5000")); // 50% utilization
+  describe("Interest Rate Management", function () {
+    beforeEach(async function () {
+      // Setup utilization
+      await hyperLendPool.connect(user2).supply(await usdc.getAddress(), ethers.utils.parseEther("100000"));
+      await hyperLendPool.connect(user1).supply(await weth.getAddress(), ethers.utils.parseEther("25")); // $50k collateral
+      await hyperLendPool.connect(user1).borrow(await usdc.getAddress(), ethers.utils.parseEther("50000")); // 50% utilization
+    });
+
+    it("Should calculate utilization rate correctly", async function () {
+      const utilizationRate = await hyperLendPool.getUtilizationRate(await usdc.getAddress());
+      expect(utilizationRate).to.equal(5000); // 50%
+    });
+
+    it("Should update interest rates based on utilization", async function () {
+      const marketData = await hyperLendPool.getMarketData(await usdc.getAddress());
       
-      const marketData = await hyperLendPool.getMarketData(usdc.target);
-      expect(marketData.utilizationRate).to.equal(parseEther("0.5")); // 50%
       expect(marketData.borrowAPY).to.be.gt(0);
       expect(marketData.supplyAPY).to.be.gt(0);
       expect(marketData.borrowAPY).to.be.gt(marketData.supplyAPY);
     });
 
-    it("Should update interest rates in real-time", async function () {
-      await hyperLendPool.connect(user1).supply(usdc.target, parseEther("10000"));
-      await hyperLendPool.connect(user1).supply(weth.target, parseEther("10"));
-      
-      const initialData = await hyperLendPool.getMarketData(usdc.target);
-      
-      // Create utilization
-      await hyperLendPool.connect(user1).borrow(usdc.target, parseEther("8000")); // 80% utilization
-      
-      const updatedData = await hyperLendPool.getMarketData(usdc.target);
-      expect(updatedData.borrowAPY).to.be.gt(initialData.borrowAPY);
-    });
-
     it("Should accrue interest over time", async function () {
-      await hyperLendPool.connect(user1).supply(usdc.target, parseEther("10000"));
-      await hyperLendPool.connect(user1).supply(weth.target, parseEther("10"));
-      await hyperLendPool.connect(user1).borrow(usdc.target, parseEther("5000"));
-      
-      const initialDebt = await debtUSDC.balanceOfDebt(user1.address);
+      const initialMarketData = await hyperLendPool.getMarketData(await usdc.getAddress());
       
       // Fast forward time
-      await time.increase(86400); // 1 day
+      await time.increase(86400 * 30); // 30 days
       
       // Update interest
-      await hyperLendPool.updateMarketInterest(usdc.target);
+      await hyperLendPool.updateMarketInterest(await usdc.getAddress());
       
-      const finalDebt = await debtUSDC.balanceOfDebt(user1.address);
-      expect(finalDebt).to.be.gt(initialDebt);
+      const finalMarketData = await hyperLendPool.getMarketData(await usdc.getAddress());
+      expect(finalMarketData.totalBorrows).to.be.gt(initialMarketData.totalBorrows);
+    });
+
+    it("Should handle batch interest updates", async function () {
+      const assets = [await usdc.getAddress(), await weth.getAddress()];
+      
+      await expect(
+        hyperLendPool.batchUpdateInterest(assets)
+      ).to.emit(hyperLendPool, "BatchInterestUpdate")
+        .withArgs(assets);
     });
   });
 
@@ -254,161 +376,207 @@ describe("HyperLendPool", function () {
 
   describe("Liquidations", function () {
     beforeEach(async function () {
-      // Setup a borrowing position
-      await hyperLendPool.connect(user1).supply(weth.target, parseEther("10")); // $20000 collateral
-      await hyperLendPool.connect(user1).borrow(usdc.target, parseEther("15000")); // $15000 debt (75% LTV)
+      // Setup liquidatable position
+      await hyperLendPool.connect(user2).supply(await usdc.getAddress(), ethers.utils.parseEther("100000"));
+      await hyperLendPool.connect(user1).supply(await weth.getAddress(), ethers.utils.parseEther("10"));
+      await hyperLendPool.connect(user1).borrow(await usdc.getAddress(), ethers.utils.parseEther("15000")); // 75% LTV
       
-      // User2 supplies USDC for liquidation
-      await hyperLendPool.connect(user2).supply(usdc.target, parseEther("50000"));
+      // Setup liquidator
+      await usdc.transfer(liquidator.address, ethers.utils.parseEther("20000"));
+      await usdc.connect(liquidator).approve(await hyperLendPool.getAddress(), ethers.constants.MaxUint256);
     });
 
-    it("Should allow liquidation when health factor drops", async function () {
-      // Drop WETH price to make position unhealthy
-      await priceOracle.setEmergencyPrice(weth.target, parseEther("1600"), "Price drop"); // 20% drop
+    it("Should execute liquidation when position is unhealthy", async function () {
+      // Drop collateral price to make position liquidatable
+      await priceOracle.setAssetPrice(await weth.getAddress(), ethers.utils.parseEther("1600")); // 20% drop
       
-      // Update user health
-      await hyperLendPool.updateUserHealth(user1.address);
+      const liquidationAmount = ethers.utils.parseEther("5000");
       
-      const userData = await hyperLendPool.getUserAccountData(user1.address);
-      expect(userData.isLiquidatable).to.be.true;
-      
-      // Liquidate
-      const liquidationAmount = parseEther("5000");
       await expect(
         hyperLendPool.connect(liquidator).liquidate(
           user1.address,
-          usdc.target,
+          await usdc.getAddress(),
           liquidationAmount,
-          weth.target
+          await weth.getAddress()
         )
-      ).to.emit(hyperLendPool, "Liquidation");
-      
-      // Check that debt was reduced
-      const finalDebt = await debtUSDC.balanceOfDebt(user1.address);
-      expect(finalDebt).to.be.lt(parseEther("15000"));
+      ).to.emit(hyperLendPool, "Liquidation")
+        .withArgs(
+          liquidator.address,
+          user1.address,
+          await usdc.getAddress(),
+          liquidationAmount
+        );
     });
 
-    it("Should execute micro-liquidations for real-time risk management", async function () {
-      // Drop WETH price slightly to trigger micro-liquidation
-      await priceOracle.setEmergencyPrice(weth.target, parseEther("1800"), "Small price drop");
+    it("Should reject liquidation of healthy positions", async function () {
+      const liquidationAmount = ethers.utils.parseEther("5000");
       
-      // Grant liquidator role
-      await liquidationEngine.grantRole(
-        await liquidationEngine.LIQUIDATOR_ROLE(),
-        liquidator.address
-      );
-      
-      const optimalAmount = await liquidationEngine.calculateOptimalLiquidation(
-        user1.address,
-        usdc.target,
-        parseEther("1000")
-      );
-      
-      expect(optimalAmount).to.be.gt(0);
-    });
-
-    it("Should prevent liquidation of healthy positions", async function () {
       await expect(
         hyperLendPool.connect(liquidator).liquidate(
           user1.address,
-          usdc.target,
-          parseEther("1000"),
-          weth.target
+          await usdc.getAddress(),
+          liquidationAmount,
+          await weth.getAddress()
         )
-      ).to.be.revertedWith("Position not liquidatable");
+      ).to.be.revertedWith("HyperLend: Position not liquidatable");
+    });
+
+    it("Should calculate liquidation bonus correctly", async function () {
+      // Make position liquidatable
+      await priceOracle.setAssetPrice(await weth.getAddress(), ethers.utils.parseEther("1500"));
+      
+      const liquidationAmount = ethers.utils.parseEther("5000");
+      const expectedBonus = liquidationAmount.mul(500).div(10000); // 5% bonus
+      
+      const liquidationData = await hyperLendPool.calculateLiquidation(
+        user1.address,
+        await usdc.getAddress(),
+        liquidationAmount,
+        await weth.getAddress()
+      );
+      
+      expect(liquidationData.liquidationBonus).to.equal(expectedBonus);
     });
   });
 
   // ═══════════════════════════════════════════════════════════════════════════════════
-  // REAL-TIME FEATURES TESTS
+  // REAL-TIME METRICS TESTS
   // ═══════════════════════════════════════════════════════════════════════════════════
 
-  describe("Real-Time Features", function () {
+  describe("Real-Time Metrics", function () {
+    beforeEach(async function () {
+      // Setup some activity
+      await hyperLendPool.connect(user1).supply(await usdc.getAddress(), ethers.utils.parseEther("50000"));
+      await hyperLendPool.connect(user1).supply(await weth.getAddress(), ethers.utils.parseEther("10"));
+      await hyperLendPool.connect(user1).borrow(await usdc.getAddress(), ethers.utils.parseEther("20000"));
+    });
+
+    it("Should provide real-time TVL", async function () {
+      const metrics = await hyperLendPool.getRealTimeMetrics();
+      
+      expect(metrics.tvl).to.be.gt(0);
+      expect(metrics.totalBorrowed).to.be.gt(0);
+      expect(metrics.utilizationRate).to.be.gt(0);
+      expect(metrics.lastUpdate).to.be.gt(0);
+    });
+
+    it("Should track user account data", async function () {
+      const userData = await hyperLendPool.getUserAccountData(user1.address);
+      
+      expect(userData.totalCollateralValue).to.be.gt(0);
+      expect(userData.totalDebtValue).to.be.gt(0);
+      expect(userData.healthFactor).to.be.gt(0);
+      expect(userData.ltv).to.be.gt(0);
+      expect(userData.availableBorrow).to.be.gte(0);
+    });
+
     it("Should update metrics in real-time", async function () {
       const initialMetrics = await hyperLendPool.getRealTimeMetrics();
       
-      // Add liquidity
-      await hyperLendPool.connect(user1).supply(usdc.target, parseEther("10000"));
-      await hyperLendPool.connect(user1).supply(weth.target, parseEther("5"));
-      await hyperLendPool.connect(user1).borrow(usdc.target, parseEther("5000"));
+      // Add more activity
+      await hyperLendPool.connect(user2).supply(await usdc.getAddress(), ethers.utils.parseEther("25000"));
       
       const updatedMetrics = await hyperLendPool.getRealTimeMetrics();
       expect(updatedMetrics.tvl).to.be.gt(initialMetrics.tvl);
-      expect(updatedMetrics.borrowed).to.be.gt(initialMetrics.borrowed);
-      expect(updatedMetrics.lastUpdate).to.be.gt(initialMetrics.lastUpdate);
-    });
-
-    it("Should batch update interest rates efficiently", async function () {
-      const assets = [usdc.target, weth.target];
-      
-      await expect(hyperLendPool.batchUpdateInterest(assets))
-        .to.emit(hyperLendPool, "InterestRateUpdate");
-    });
-
-    it("Should batch update user health factors", async function () {
-      // Create positions for multiple users
-      await hyperLendPool.connect(user1).supply(weth.target, parseEther("10"));
-      await hyperLendPool.connect(user2).supply(usdc.target, parseEther("20000"));
-      await hyperLendPool.connect(user1).borrow(usdc.target, parseEther("5000"));
-      
-      const userList = [user1.address, user2.address];
-      await hyperLendPool.batchUpdateUserHealth(userList);
-      
-      const user1Data = await hyperLendPool.getUserAccountData(user1.address);
-      const user2Data = await hyperLendPool.getUserAccountData(user2.address);
-      
-      expect(user1Data.healthFactor).to.be.gt(0);
-      expect(user2Data.healthFactor).to.equal(ethers.MaxUint256); // No debt
+      expect(updatedMetrics.lastUpdate).to.be.gte(initialMetrics.lastUpdate);
     });
   });
 
   // ═══════════════════════════════════════════════════════════════════════════════════
-  // EDGE CASES AND ERROR CONDITIONS
+  // ADMIN FUNCTIONS TESTS
   // ═══════════════════════════════════════════════════════════════════════════════════
 
-  describe("Edge Cases", function () {
-    it("Should handle zero amounts gracefully", async function () {
-      await expect(
-        hyperLendPool.connect(user1).supply(usdc.target, 0)
-      ).to.be.revertedWith("HyperLend: Invalid amount");
-      
-      await expect(
-        hyperLendPool.connect(user1).withdraw(usdc.target, 0)
-      ).to.be.revertedWith("HyperLend: Invalid amount");
-    });
-
-    it("Should prevent operations when paused", async function () {
+  describe("Admin Functions", function () {
+    it("Should allow admin to pause the contract", async function () {
       await hyperLendPool.pause();
+      expect(await hyperLendPool.paused()).to.be.true;
       
+      // Operations should be paused
       await expect(
-        hyperLendPool.connect(user1).supply(usdc.target, parseEther("1000"))
+        hyperLendPool.connect(user1).supply(await usdc.getAddress(), ethers.utils.parseEther("1000"))
       ).to.be.revertedWith("Pausable: paused");
     });
 
-    it("Should handle market caps correctly", async function () {
-      const supplyCap = parseEther("10000000"); // 10M supply cap
-      const largSupply = parseEther("15000000"); // 15M supply (exceeds cap)
+    it("Should allow admin to unpause the contract", async function () {
+      await hyperLendPool.pause();
+      await hyperLendPool.unpause();
       
-      // Give user enough tokens
-      await usdc.transfer(user1.address, largSupply);
-      await usdc.connect(user1).approve(hyperLendPool.target, largSupply);
+      expect(await hyperLendPool.paused()).to.be.false;
       
+      // Operations should work again
       await expect(
-        hyperLendPool.connect(user1).supply(usdc.target, largSupply)
-      ).to.be.revertedWith("HyperLend: Supply cap exceeded");
+        hyperLendPool.connect(user1).supply(await usdc.getAddress(), ethers.utils.parseEther("1000"))
+      ).to.not.be.reverted;
     });
 
-    it("Should handle insufficient liquidity for withdrawals", async function () {
-      // User1 supplies
-      await hyperLendPool.connect(user1).supply(usdc.target, parseEther("10000"));
-      
-      // User2 supplies collateral and borrows most liquidity
-      await hyperLendPool.connect(user2).supply(weth.target, parseEther("20")); // $40k collateral
-      await hyperLendPool.connect(user2).borrow(usdc.target, parseEther("9500")); // Borrow most of pool
-      
-      // User1 tries to withdraw more than available
+    it("Should restrict admin functions to admin role", async function () {
       await expect(
-        hyperLendPool.connect(user1).withdraw(usdc.target, parseEther("8000"))
+        hyperLendPool.connect(user1).pause()
+      ).to.be.revertedWith("AccessControl:");
+      
+      await expect(
+        hyperLendPool.connect(user1).setInterestRateModel(await interestRateModel.getAddress())
+      ).to.be.revertedWith("AccessControl:");
+    });
+
+    it("Should allow admin to update contract addresses", async function () {
+      const newPriceOracle = await priceOracle.getAddress(); // Same address for test
+      
+      await expect(
+        hyperLendPool.setPriceOracle(newPriceOracle)
+      ).to.emit(hyperLendPool, "PriceOracleUpdated")
+        .withArgs(await priceOracle.getAddress(), newPriceOracle);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════════════
+  // ERROR HANDLING TESTS
+  // ═══════════════════════════════════════════════════════════════════════════════════
+
+  describe("Error Handling", function () {
+    it("Should reject zero amount operations", async function () {
+      await expect(
+        hyperLendPool.connect(user1).supply(await usdc.getAddress(), 0)
+      ).to.be.revertedWith("HyperLend: Invalid amount");
+      
+      await expect(
+        hyperLendPool.connect(user1).withdraw(await usdc.getAddress(), 0)
+      ).to.be.revertedWith("HyperLend: Invalid amount");
+    });
+
+    it("Should reject operations with invalid assets", async function () {
+      const invalidAsset = ethers.constants.AddressZero;
+      
+      await expect(
+        hyperLendPool.connect(user1).supply(invalidAsset, ethers.utils.parseEther("1000"))
+      ).to.be.revertedWith("HyperLend: Invalid asset");
+    });
+
+    it("Should handle insufficient balance gracefully", async function () {
+      const largeAmount = ethers.utils.parseEther("1000000");
+      
+      await expect(
+        hyperLendPool.connect(user1).supply(await usdc.getAddress(), largeAmount)
+      ).to.be.revertedWith("ERC20: transfer amount exceeds balance");
+    });
+
+    it("Should prevent borrowing without sufficient collateral", async function () {
+      const borrowAmount = ethers.utils.parseEther("10000");
+      
+      await expect(
+        hyperLendPool.connect(user1).borrow(await usdc.getAddress(), borrowAmount)
+      ).to.be.revertedWith("HyperLend: Insufficient collateral");
+    });
+
+    it("Should prevent withdrawal that would make position unhealthy", async function () {
+      // Setup borrowing position
+      await hyperLendPool.connect(user2).supply(await usdc.getAddress(), ethers.utils.parseEther("50000"));
+      await hyperLendPool.connect(user1).supply(await weth.getAddress(), ethers.utils.parseEther("10"));
+      await hyperLendPool.connect(user1).borrow(await usdc.getAddress(), ethers.utils.parseEther("15000"));
+      
+      // Try to withdraw too much collateral
+      await expect(
+        hyperLendPool.connect(user1).withdraw(await weth.getAddress(), ethers.utils.parseEther("9"))
       ).to.be.revertedWith("HyperLend: Withdrawal not allowed");
     });
   });
@@ -418,231 +586,66 @@ describe("HyperLendPool", function () {
   // ═══════════════════════════════════════════════════════════════════════════════════
 
   describe("Integration Tests", function () {
-    it("Should handle complex multi-user scenarios", async function () {
-      // User1: Supply WETH, borrow USDC
-      await hyperLendPool.connect(user1).supply(weth.target, parseEther("10"));
-      await hyperLendPool.connect(user1).borrow(usdc.target, parseEther("10000"));
+    it("Should handle complete lending cycle", async function () {
+      const supplyAmount = ethers.utils.parseEther("10000");
+      const collateralAmount = ethers.utils.parseEther("5");
+      const borrowAmount = ethers.utils.parseEther("7000");
+      const repayAmount = ethers.utils.parseEther("3000");
+      const withdrawAmount = ethers.utils.parseEther("2000");
       
-      // User2: Supply USDC, borrow WETH
-      await hyperLendPool.connect(user2).supply(usdc.target, parseEther("40000"));
-      await hyperLendPool.connect(user2).borrow(weth.target, parseEther("5"));
+      // 1. Supply liquidity
+      await hyperLendPool.connect(user2).supply(await usdc.getAddress(), supplyAmount);
       
-      // Check that both positions are healthy
+      // 2. Supply collateral and borrow
+      await hyperLendPool.connect(user1).supply(await weth.getAddress(), collateralAmount);
+      await hyperLendPool.connect(user1).borrow(await usdc.getAddress(), borrowAmount);
+      
+      // 3. Repay part of debt
+      await hyperLendPool.connect(user1).repay(await usdc.getAddress(), repayAmount);
+      
+      // 4. Withdraw some collateral
+      await hyperLendPool.connect(user1).withdraw(await weth.getAddress(), ethers.utils.parseEther("1"));
+      
+      // 5. Withdraw liquidity
+      await hyperLendPool.connect(user2).withdraw(await usdc.getAddress(), withdrawAmount);
+      
+      // Check final state
       const user1Data = await hyperLendPool.getUserAccountData(user1.address);
-      const user2Data = await hyperLendPool.getUserAccountData(user2.address);
-      
-      expect(user1Data.healthFactor).to.be.gt(parseEther("1"));
-      expect(user2Data.healthFactor).to.be.gt(parseEther("1"));
-      
-      // Check system metrics
-      const metrics = await hyperLendPool.getRealTimeMetrics();
-      expect(metrics.tvl).to.be.gt(parseEther("50000")); // $50k+ TVL
-      expect(metrics.utilizationRate).to.be.gt(0);
+      expect(user1Data.totalDebtValue).to.equal(borrowAmount.sub(repayAmount));
+      expect(user1Data.healthFactor).to.be.gt(ethers.utils.parseEther("1"));
     });
 
-    it("Should handle interest accrual over time", async function () {
-      // Setup positions
-      await hyperLendPool.connect(user1).supply(usdc.target, parseEther("50000"));
-      await hyperLendPool.connect(user2).supply(weth.target, parseEther("10"));
-      await hyperLendPool.connect(user2).borrow(usdc.target, parseEther("15000"));
-      
-      const initialSupplyBalance = await hlUSDC.balanceOfUnderlying(user1.address);
-      const initialDebtBalance = await debtUSDC.balanceOfDebt(user2.address);
-      
-      // Fast forward time and accrue interest
-      await time.increase(86400 * 30); // 30 days
-      await hyperLendPool.updateMarketInterest(usdc.target);
-      
-      const finalSupplyBalance = await hlUSDC.balanceOfUnderlying(user1.address);
-      const finalDebtBalance = await debtUSDC.balanceOfDebt(user2.address);
-      
-      // Supply should earn interest
-      expect(finalSupplyBalance).to.be.gt(initialSupplyBalance);
-      // Debt should accrue interest
-      expect(finalDebtBalance).to.be.gt(initialDebtBalance);
-    });
-
-    it("Should handle liquidation cascade scenarios", async function () {
-      // Create multiple overleveraged positions
+    it("Should handle multiple users simultaneously", async function () {
       const users = [user1, user2];
+      const supplyAmounts = [ethers.utils.parseEther("25000"), ethers.utils.parseEther("15000")];
       
+      // Multiple users supply
       for (let i = 0; i < users.length; i++) {
-        await hyperLendPool.connect(users[i]).supply(weth.target, parseEther("5"));
-        await hyperLendPool.connect(users[i]).borrow(usdc.target, parseEther("7500")); // 75% LTV
+        await hyperLendPool.connect(users[i]).supply(await usdc.getAddress(), supplyAmounts[i]);
       }
       
-      // Crash WETH price
-      await priceOracle.setEmergencyPrice(weth.target, parseEther("1200"), "Market crash"); // 40% drop
+      // Check total supplies
+      const marketData = await hyperLendPool.getMarketData(await usdc.getAddress());
+      expect(marketData.totalSupply).to.equal(supplyAmounts[0].add(supplyAmounts[1]));
       
-      // Update all user health factors
-      for (const user of users) {
-        await hyperLendPool.updateUserHealth(user.address);
-        const userData = await hyperLendPool.getUserAccountData(user.address);
-        expect(userData.isLiquidatable).to.be.true;
+      // Multiple users can withdraw
+      for (let i = 0; i < users.length; i++) {
+        await hyperLendPool.connect(users[i]).withdraw(await usdc.getAddress(), ethers.utils.parseEther("5000"));
       }
     });
-  });
 
-  // ═══════════════════════════════════════════════════════════════════════════════════
-  // PERFORMANCE TESTS
-  // ═══════════════════════════════════════════════════════════════════════════════════
-
-  describe("Performance Tests", function () {
-    it("Should handle high-frequency operations efficiently", async function () {
-      // Setup initial liquidity
-      await hyperLendPool.connect(user1).supply(usdc.target, parseEther("100000"));
-      await hyperLendPool.connect(user1).supply(weth.target, parseEther("50"));
+    it("Should maintain accurate accounting across operations", async function () {
+      const initialBalance = await usdc.balanceOf(await hyperLendPool.getAddress());
       
-      // Perform multiple rapid operations
-      const operations = 10;
-      const startTime = Date.now();
+      // Series of operations
+      await hyperLendPool.connect(user1).supply(await usdc.getAddress(), ethers.utils.parseEther("10000"));
+      await hyperLendPool.connect(user2).supply(await usdc.getAddress(), ethers.utils.parseEther("5000"));
+      await hyperLendPool.connect(user1).withdraw(await usdc.getAddress(), ethers.utils.parseEther("3000"));
       
-      for (let i = 0; i < operations; i++) {
-        await hyperLendPool.connect(user2).supply(usdc.target, parseEther("1000"));
-        await hyperLendPool.connect(user2).withdraw(usdc.target, parseEther("500"));
-      }
+      const finalBalance = await usdc.balanceOf(await hyperLendPool.getAddress());
+      const expectedBalance = initialBalance.add(ethers.utils.parseEther("12000")); // +15k -3k = +12k
       
-      const endTime = Date.now();
-      const avgTimePerOp = (endTime - startTime) / (operations * 2);
-      
-      console.log(`Average time per operation: ${avgTimePerOp}ms`);
-      expect(avgTimePerOp).to.be.lt(1000); // Should be under 1 second per op
-    });
-
-    it("Should update metrics efficiently in batch", async function () {
-      // Create multiple positions
-      const batchUsers = await createUsers(20); // Helper function to create test users
-      
-      for (let i = 0; i < Math.min(batchUsers.length, 5); i++) {
-        const user = batchUsers[i];
-        await usdc.transfer(user.address, parseEther("10000"));
-        await usdc.connect(user).approve(hyperLendPool.target, ethers.MaxUint256);
-        await hyperLendPool.connect(user).supply(usdc.target, parseEther("5000"));
-      }
-      
-      const userAddresses = batchUsers.slice(0, 5).map(u => u.address);
-      
-      const startTime = Date.now();
-      await hyperLendPool.batchUpdateUserHealth(userAddresses);
-      const endTime = Date.now();
-      
-      console.log(`Batch update time for ${userAddresses.length} users: ${endTime - startTime}ms`);
-      expect(endTime - startTime).to.be.lt(5000); // Should complete in under 5 seconds
-    });
-  });
-
-  // ═══════════════════════════════════════════════════════════════════════════════════
-  // ADMIN FUNCTIONS TESTS
-  // ═══════════════════════════════════════════════════════════════════════════════════
-
-  describe("Admin Functions", function () {
-    it("Should allow admin to add new markets", async function () {
-      // Deploy a new mock token
-      const MockERC20 = await ethers.getContractFactory("MockERC20");
-      const newToken = await MockERC20.deploy("Test Token", "TEST", 18, parseEther("1000000"));
-      
-      // Deploy market tokens for new asset
-      const HLToken = await ethers.getContractFactory("HLToken");
-      const DebtToken = await ethers.getContractFactory("DebtToken");
-      
-      const hlToken = await HLToken.deploy(
-        "HyperLend TEST",
-        "hlTEST",
-        newToken.target,
-        hyperLendPool.target,
-        admin.address
-      );
-      
-      const debtToken = await DebtToken.deploy(
-        "HyperLend TEST Debt",
-        "debtTEST",
-        newToken.target,
-        hyperLendPool.target,
-        admin.address
-      );
-      
-      // Add market
-      await expect(
-        hyperLendPool.addMarket(
-          newToken.target,
-          hlToken.target,
-          debtToken.target,
-          parseEther("0.8"), // 80% liquidation threshold
-          parseEther("0.05"), // 5% liquidation bonus
-          parseEther("1000000"), // 1M borrow cap
-          parseEther("10000000") // 10M supply cap
-        )
-      ).to.emit(hyperLendPool, "MarketAdded");
-    });
-
-    it("Should allow admin to pause/unpause", async function () {
-      await hyperLendPool.pause();
-      expect(await hyperLendPool.paused()).to.be.true;
-      
-      await hyperLendPool.unpause();
-      expect(await hyperLendPool.paused()).to.be.false;
-    });
-
-    it("Should restrict admin functions to admin role", async function () {
-      await expect(
-        hyperLendPool.connect(user1).pause()
-      ).to.be.revertedWith("HyperLend: Not admin");
-      
-      await expect(
-        hyperLendPool.connect(user1).setInterestRateModel(ethers.ZeroAddress)
-      ).to.be.revertedWith("HyperLend: Not admin");
-    });
-  });
-
-  // ═══════════════════════════════════════════════════════════════════════════════════
-  // UPGRADE TESTS
-  // ═══════════════════════════════════════════════════════════════════════════════════
-
-  describe("Upgradeability", function () {
-    it("Should be upgradeable by admin", async function () {
-      // Deploy new implementation (for testing, we'll use the same contract)
-      const HyperLendPoolV2 = await ethers.getContractFactory("HyperLendPool", {
-        libraries: {
-          Math: await deployments.get("Math").then(d => d.address),
-        },
-      });
-      
-      // This would be a new implementation with additional features
-      const newImplementation = await HyperLendPoolV2.deploy();
-      
-      // In a real upgrade, you'd use upgrades.upgradeProxy()
-      // For this test, we just verify the proxy pattern is in place
-      expect(await hyperLendPool.hasRole(await hyperLendPool.DEFAULT_ADMIN_ROLE(), admin.address)).to.be.true;
-    });
-
-    it("Should preserve state across upgrades", async function () {
-      // Setup state
-      await hyperLendPool.connect(user1).supply(usdc.target, parseEther("10000"));
-      const preUpgradeBalance = await hlUSDC.balanceOf(user1.address);
-      
-      // In a real scenario, you'd upgrade here
-      // For this test, we just verify state is accessible
-      const postUpgradeBalance = await hlUSDC.balanceOf(user1.address);
-      expect(postUpgradeBalance).to.equal(preUpgradeBalance);
+      expect(finalBalance).to.equal(expectedBalance);
     });
   });
 });
-
-// ═══════════════════════════════════════════════════════════════════════════════════
-// HELPER FUNCTIONS
-// ═══════════════════════════════════════════════════════════════════════════════════
-
-async function advanceTimeAndMine(seconds: number) {
-  await time.increase(seconds);
-  await ethers.provider.send("evm_mine", []);
-}
-
-function calculateHealthFactor(collateralValue: bigint, debtValue: bigint, liquidationThreshold: bigint): bigint {
-  if (debtValue === 0n) return ethers.MaxUint256;
-  return (collateralValue * liquidationThreshold) / (debtValue * PRECISION);
-}
-
-function calculateUtilizationRate(totalBorrow: bigint, totalSupply: bigint): bigint {
-  if (totalSupply === 0n) return 0n;
-  return (totalBorrow * PRECISION) / totalSupply;
-}

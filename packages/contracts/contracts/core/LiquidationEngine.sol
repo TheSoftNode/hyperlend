@@ -7,7 +7,7 @@ import "@openzeppelin/contracts/security/Pausable.sol";
 import "../interfaces/ILiquidationEngine.sol";
 import "../interfaces/IPriceOracle.sol";
 import "../interfaces/IRiskManager.sol";
-import "../libraries/Math.sol";
+import {Math as HyperMath} from "../libraries/Math.sol";
 
 /**
  * @title LiquidationEngine
@@ -20,7 +20,7 @@ contract LiquidationEngine is
     ReentrancyGuard,
     Pausable
 {
-    using Math for uint256;
+    using HyperMath for uint256;
 
     // ═══════════════════════════════════════════════════════════════════════════════════
     // CONSTANTS
@@ -184,7 +184,7 @@ contract LiquidationEngine is
         address user,
         address debtAsset,
         uint256 maxDebtAmount
-    ) external view override returns (uint256 optimalAmount) {
+    ) public view override returns (uint256 optimalAmount) {
         if (!microLiquidationEnabled) return 0;
 
         // Get user's current health factor
@@ -361,7 +361,7 @@ contract LiquidationEngine is
     function isPositionLiquidatable(
         address user
     )
-        external
+        public
         view
         override
         returns (
@@ -588,15 +588,19 @@ contract LiquidationEngine is
     ) internal view returns (uint256 totalCollateral, uint256 totalDebt) {
         // This would typically call the main pool contract to get user positions
         // For now, we'll use the risk manager
-        (totalCollateral, totalDebt, , ) = riskManager.getUserAccountData(user);
-        return (totalCollateral, totalDebt);
+        IRiskManager.UserRiskData memory riskData = riskManager.getUserRiskData(
+            user
+        );
+        return (riskData.totalCollateralValue, riskData.totalBorrowValue);
     }
 
     function _getUserTotalDebt(
         address user
     ) internal view returns (uint256 totalDebt) {
-        (, totalDebt, , ) = riskManager.getUserAccountData(user);
-        return totalDebt;
+        IRiskManager.UserRiskData memory riskData = riskManager.getUserRiskData(
+            user
+        );
+        return riskData.totalBorrowValue;
     }
 
     function _getUserLiquidationThreshold(

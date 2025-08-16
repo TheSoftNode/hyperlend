@@ -316,7 +316,7 @@ contract DebtToken is ERC20, AccessControl, Pausable {
     {
         UserDebt memory userDebt = userDebts[user];
         principal = userDebt.principalDebt;
-        interest = accruedInterestOf(user);
+        interest = this.accruedInterestOf(user);
         total = principal + interest;
         lastUpdate = userDebt.lastUpdateTime;
     }

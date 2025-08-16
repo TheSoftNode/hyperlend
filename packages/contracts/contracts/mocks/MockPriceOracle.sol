@@ -50,7 +50,7 @@ contract MockPriceOracle is IPriceOracle, Ownable {
     // CONSTRUCTOR
     // ═══════════════════════════════════════════════════════════════════════════════════
 
-    constructor() Ownable(msg.sender) {}
+    constructor() Ownable() {}
 
     // ═══════════════════════════════════════════════════════════════════════════════════
     // PRICE ORACLE INTERFACE IMPLEMENTATION
@@ -174,8 +174,8 @@ contract MockPriceOracle is IPriceOracle, Ownable {
 
     function getPriceHistory(
         address asset,
-        uint256 fromTimestamp,
-        uint256 toTimestamp
+        uint256 /* fromTimestamp */,
+        uint256 /* toTimestamp */
     )
         external
         view
@@ -183,11 +183,11 @@ contract MockPriceOracle is IPriceOracle, Ownable {
         returns (uint256[] memory timestamps, uint256[] memory prices)
     {
         uint256[] storage assetTimestamps = timestampHistory[asset];
-        uint256[] storage assetPrices = priceHistory[asset];
+        uint256[] storage assetPriceHistory = priceHistory[asset];
 
         // Simple implementation - return all history
         timestamps = assetTimestamps;
-        prices = assetPrices;
+        prices = assetPriceHistory;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════════
@@ -250,7 +250,7 @@ contract MockPriceOracle is IPriceOracle, Ownable {
         );
 
         for (uint256 i = 0; i < assets.length; i++) {
-            setPrice(assets[i], prices[i]);
+            setPrice(assets[i], prices[i], 100);
         }
     }
 
@@ -301,7 +301,7 @@ contract MockPriceOracle is IPriceOracle, Ownable {
                 : currentPrice / 2;
         }
 
-        setPrice(asset, newPrice);
+        setPrice(asset, newPrice, 100);
     }
 
     /**
@@ -580,15 +580,16 @@ contract MockPriceOracle is IPriceOracle, Ownable {
      * @param delay Delay in seconds
      */
     function simulateNetworkCongestion(uint256 delay) external onlyOwner {
-        setPriceDelay(delay);
+        priceDelay = delay;
+        emit PriceDelaySet(delay);
     }
 
     /**
      * @notice Simulate oracle outage
-     * @param duration Duration of outage in seconds
      */
-    function simulateOutage(uint256 duration) external onlyOwner {
-        setOracleEnabled(false);
+    function simulateOutage(uint256 /* duration */) external onlyOwner {
+        oracleEnabled = false;
+        emit OracleToggled(false);
         // In a real scenario, you'd set a timer to re-enable after duration
         // For testing, manual re-enable is expected
     }
@@ -619,12 +620,11 @@ contract MockPriceOracle is IPriceOracle, Ownable {
      * @notice Simulate price flash crash
      * @param asset Asset address
      * @param crashPercent Percentage to crash (in basis points)
-     * @param recoveryTime Time in seconds before price recovers
      */
     function simulateFlashCrash(
         address asset,
         uint256 crashPercent,
-        uint256 recoveryTime
+        uint256 /* recoveryTime */
     ) external onlyOwner {
         PriceData storage data = assetPrices[asset];
         uint256 originalPrice = data.price;
@@ -633,7 +633,7 @@ contract MockPriceOracle is IPriceOracle, Ownable {
         uint256 crashAmount = (originalPrice * crashPercent) / 10000;
         uint256 crashedPrice = originalPrice - crashAmount;
 
-        setPrice(asset, crashedPrice);
+        setPrice(asset, crashedPrice, 100);
 
         // Note: In a real implementation, you'd set up a timer to recover the price
         // For testing, manual recovery is expected

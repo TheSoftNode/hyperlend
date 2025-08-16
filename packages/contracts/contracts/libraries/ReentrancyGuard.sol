@@ -323,9 +323,9 @@ abstract contract ReentrancyGuard {
 
     /**
      * @dev Check if contract is currently in a reentrant state
-     * @return isReentrant True if reentrant state detected
+     * @return reentrantState True if reentrant state detected
      */
-    function isReentrant() external view returns (bool isReentrant) {
+    function isReentrant() external view returns (bool reentrantState) {
         return _status == _ENTERED;
     }
 
@@ -543,9 +543,9 @@ abstract contract ReentrancyGuard {
         // Check if the contract is in a reentrant state
         // This requires the other contract to implement the same interface
         try ReentrancyGuard(contractAddress).isReentrant() returns (
-            bool isReentrant
+            bool contractReentrantState
         ) {
-            if (isReentrant) {
+            if (contractReentrantState) {
                 revert ReentrancyGuard__ReentrantCall();
             }
         } catch {

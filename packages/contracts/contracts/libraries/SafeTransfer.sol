@@ -5,7 +5,14 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * @title SafeTransfer
- * @dev Library for safe token transfers with proper error handling
+ * @dev Library for         bool approveSuccess = _callOptionalReturn(
+            token,
+            abi.encodeWithSelector(APPROVE_SELECTOR, spender, amount)
+        );
+
+        if (!approveSuccess) {
+            revert SafeTransfer__ApproveFailed();
+        }en transfers with proper error handling
  * @notice Handles tokens that don't return bool on transfer/transferFrom
  */
 library SafeTransfer {
@@ -92,12 +99,12 @@ library SafeTransfer {
 
         uint256 toBalanceBefore = token.balanceOf(to);
 
-        bool success = _callOptionalReturn(
+        bool transferSuccess = _callOptionalReturn(
             token,
             abi.encodeWithSelector(TRANSFER_FROM_SELECTOR, from, to, amount)
         );
 
-        if (!success) {
+        if (!transferSuccess) {
             revert SafeTransfer__TransferFromFailed();
         }
 
@@ -122,21 +129,21 @@ library SafeTransfer {
         // Some tokens require setting allowance to 0 first
         uint256 currentAllowance = token.allowance(address(this), spender);
         if (currentAllowance != 0) {
-            bool success = _callOptionalReturn(
+            bool resetSuccess = _callOptionalReturn(
                 token,
                 abi.encodeWithSelector(APPROVE_SELECTOR, spender, 0)
             );
-            if (!success) {
+            if (!resetSuccess) {
                 revert SafeTransfer__ApproveFailed();
             }
         }
 
-        bool success = _callOptionalReturn(
+        bool approveSuccess = _callOptionalReturn(
             token,
             abi.encodeWithSelector(APPROVE_SELECTOR, spender, amount)
         );
 
-        if (!success) {
+        if (!approveSuccess) {
             revert SafeTransfer__ApproveFailed();
         }
 
@@ -220,14 +227,13 @@ library SafeTransfer {
      * @notice Check if token transfer would succeed without executing it
      * @param token The token contract
      * @param from The sender address
-     * @param to The recipient address
      * @param amount The amount to transfer
      * @return success True if transfer would succeed
      */
     function canTransfer(
         IERC20 token,
         address from,
-        address to,
+        address /* to */,
         uint256 amount
     ) internal view returns (bool success) {
         if (amount == 0) return true;
@@ -278,8 +284,10 @@ library SafeTransfer {
         uint256 amount
     ) internal {
         // First try normal transferFrom
-        try token.transferFrom(from, to, amount) returns (bool success) {
-            if (success) return;
+        try token.transferFrom(from, to, amount) returns (
+            bool transferSuccess
+        ) {
+            if (transferSuccess) return;
         } catch {}
 
         // If that fails, check if we need to handle allowance

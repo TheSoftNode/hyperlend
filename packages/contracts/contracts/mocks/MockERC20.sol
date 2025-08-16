@@ -61,7 +61,7 @@ contract MockERC20 is ERC20, Ownable {
         string memory symbol,
         uint8 decimals_,
         uint256 initialSupply
-    ) ERC20(name, symbol) Ownable(msg.sender) {
+    ) ERC20(name, symbol) Ownable() {
         _decimals = decimals_;
         feeRecipient = msg.sender;
 
@@ -381,14 +381,14 @@ contract MockERC20 is ERC20, Ownable {
      * @param from Address to check
      * @param to Recipient address
      * @param amount Amount to transfer
-     * @return canTransfer Whether the transfer would succeed
+     * @return canTransferResult Whether the transfer would succeed
      * @return reason Reason if transfer would fail
      */
     function canTransfer(
         address from,
         address to,
         uint256 amount
-    ) external view returns (bool canTransfer, string memory reason) {
+    ) external view returns (bool canTransferResult, string memory reason) {
         if (!transfersEnabled) {
             return (false, "Transfers disabled");
         }

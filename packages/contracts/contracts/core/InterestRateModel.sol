@@ -4,12 +4,17 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "../interfaces/IInterestRateModel.sol";
-import "../libraries/Math.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 
 /**
  * @title InterestRateModel
- * @dev Dynamic interest rate model with real-time rate adjustments
- * @notice Optimized for Somnia's high-throughput environment
+ * @dev Dynamic interest rate model optimized for Somnia Network
+ * @notice Features:
+ * - Real-time rate adjustments leveraging Somnia's 1M+ TPS
+ * - Sub-second rate updates for ultra-responsive lending
+ * - Native STT-optimized rate calculations
+ * - DIA Oracle integration for market-driven rates
+ * - Gas-efficient operations for high-frequency updates
  */
 contract InterestRateModel is IInterestRateModel, AccessControl, Pausable {
     using Math for uint256;
@@ -119,8 +124,8 @@ contract InterestRateModel is IInterestRateModel, AccessControl, Pausable {
     function calculateRates(
         address asset,
         uint256 utilizationRate,
-        uint256 totalSupply,
-        uint256 totalBorrow
+        uint256 /* totalSupply */,
+        uint256 /* totalBorrow */
     ) external view override returns (uint256 borrowAPY, uint256 supplyAPY) {
         require(utilizationRate <= MAX_UTILIZATION, "Invalid utilization rate");
 
@@ -146,7 +151,7 @@ contract InterestRateModel is IInterestRateModel, AccessControl, Pausable {
      * @notice Get current utilization rate
      */
     function getUtilizationRate(
-        address asset,
+        address /* asset */,
         uint256 totalSupply,
         uint256 totalBorrow
     ) external pure override returns (uint256 utilizationRate) {
@@ -173,7 +178,7 @@ contract InterestRateModel is IInterestRateModel, AccessControl, Pausable {
      * @notice Calculate supply rate per second
      */
     function getSupplyRate(
-        address asset,
+        address /* asset */,
         uint256 utilizationRate,
         uint256 borrowRate,
         uint256 reserveFactor
