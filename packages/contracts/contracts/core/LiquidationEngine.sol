@@ -7,7 +7,7 @@ import "@openzeppelin/contracts/security/Pausable.sol";
 import "../interfaces/ILiquidationEngine.sol";
 import "../interfaces/IPriceOracle.sol";
 import "../interfaces/IRiskManager.sol";
-import {Math as HyperMath} from "../libraries/Math.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 
 /**
  * @title LiquidationEngine
@@ -20,7 +20,7 @@ contract LiquidationEngine is
     ReentrancyGuard,
     Pausable
 {
-    using HyperMath for uint256;
+    using Math for uint256;
 
     // ═══════════════════════════════════════════════════════════════════════════════════
     // CONSTANTS

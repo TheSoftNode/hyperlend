@@ -21,7 +21,9 @@ const config: HardhatUserConfig = {
         "somnia-testnet": {
             url: process.env.SOMNIA_TESTNET_RPC || "https://dream-rpc.somnia.network",
             chainId: 50312,
-            accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+            accounts: process.env.PRIVATE_KEY && process.env.PRIVATE_KEY !== "your_private_key_here" 
+                ? [process.env.PRIVATE_KEY] 
+                : ["0x1234567890123456789012345678901234567890123456789012345678901234"], // Dummy key for testing
         },
     },
     mocha: {

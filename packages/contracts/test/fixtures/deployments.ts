@@ -9,9 +9,6 @@ export interface DeploymentResult {
   riskManager: any;
   somniaWrapper: any;
   
-  // Libraries
-  mathLib: any;
-  
   // Mock tokens (for testing)
   usdc: any;
   weth: any;
@@ -35,15 +32,7 @@ export async function deploymentFixture(): Promise<DeploymentResult> {
 
   console.log("🚀 Deploying test contracts...");
 
-  // ═══════════════════════════════════════════════════════════════════════════════════
-  // DEPLOY LIBRARIES
-  // ═══════════════════════════════════════════════════════════════════════════════════
-  
-  console.log("📚 Deploying Math library...");
-  const MathLibFactory = await ethers.getContractFactory("Math");
-  const mathLib = await MathLibFactory.deploy();
-  await mathLib.waitForDeployment();
-  const mathLibAddress = await mathLib.getAddress();
+  // Libraries are now using OpenZeppelin's Math (no custom deployment needed)
 
   // ═══════════════════════════════════════════════════════════════════════════════════
   // DEPLOY MOCK TOKENS
@@ -75,9 +64,7 @@ export async function deploymentFixture(): Promise<DeploymentResult> {
   console.log("🏗️ Deploying core contracts...");
   
   // Deploy Interest Rate Model
-  const InterestRateModelFactory = await ethers.getContractFactory("InterestRateModel", {
-    libraries: { Math: mathLibAddress }
-  });
+  const InterestRateModelFactory = await ethers.getContractFactory("InterestRateModel");
   const interestRateModel = await InterestRateModelFactory.deploy(
     200,   // 2% base rate
     800,   // 8% slope 1
