@@ -5,7 +5,9 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "../interfaces/IRiskManager.sol";
 import "../interfaces/IPriceOracle.sol";
+import "../interfaces/IHyperLendPool.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * @title RiskManager
@@ -22,8 +24,306 @@ contract RiskManager is IRiskManager, AccessControl, Pausable {
     using Math for uint256;
 
     // ═══════════════════════════════════════════════════════════════════════════════════
-    // REAL-TIME MONITORING
+    // CONSTANTS & IMMUTABLE VARIABLES
     // ═══════════════════════════════════════════════════════════════════════════════════
+
+    // Role constants
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    bytes32 public constant RISK_ADMIN_ROLE = keccak256("RISK_ADMIN_ROLE");
+    bytes32 public constant POOL_ROLE = keccak256("POOL_ROLE");
+
+    // Mathematical constants
+    uint256 public constant PRECISION = 1e18;
+
+    // Risk parameter limits
+    uint256 public constant MAX_LIQUIDATION_THRESHOLD = 95e16; // 95%
+    uint256 public constant MIN_LIQUIDATION_THRESHOLD = 50e16; // 50%
+    uint256 public constant MAX_LIQUIDATION_BONUS = 25e16; // 25%
+    uint256 public constant MAX_BORROW_FACTOR = 90e16; // 90%
+
+    // Production-ready defaults from testnet config
+    uint256 public constant DEFAULT_LTV = 75e16; // 75% from config
+    uint256 public constant DEFAULT_LIQUIDATION_THRESHOLD = 85e16; // 85% from config
+    uint256 public constant DEFAULT_LIQUIDATION_PENALTY = 5e16; // 5% from config
+    uint256 public constant MAX_LIQUIDATION_RATIO = 50e16; // 50% from config
+
+    // System operation constants
+    uint256 public constant RISK_UPDATE_THRESHOLD = 300; // 5 minutes
+    uint256 public constant SYSTEM_UPDATE_FREQUENCY = 600; // 10 minutes
+    uint256 public constant MAX_POSITIONS_PER_QUERY = 100; // Pagination limit
+
+    // Immutable contract references
+    IPriceOracle public immutable priceOracle;
+    address public immutable lendingPool;
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // STATE VARIABLES
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    // Asset risk parameters
+    mapping(address => RiskParameters) public assetRiskParams;
+    mapping(address => bool) public isAssetSupported;
+    address[] public supportedAssets;
+
+    // Global risk parameters
+    uint256 public maxHealthFactorForLiquidation = 1e18; // 1.0
+    uint256 public minHealthFactorForBorrow = 105e16; // 1.05
+    uint256 public maxLiquidationRatio = 50e16; // 50%
+
+    // User position tracking
+    mapping(address => UserRiskData) public userRiskData;
+    mapping(address => uint256) public userLastUpdate;
+
+    // Risk monitoring
+    address[] public riskUsers;
+    mapping(address => uint256) public riskUserIndex;
+    mapping(address => bool) public isUserTracked;
+
+    // System-wide risk metrics
+    uint256 public totalCollateralValue;
+    uint256 public totalBorrowValue;
+    uint256 public averageHealthFactor;
+    uint256 public positionsAtRisk;
+    uint256 public lastSystemUpdate;
+
+    // Risk level thresholds
+    uint256[5] public riskLevelThresholds = [
+        150e16, // Level 1: > 1.5
+        125e16, // Level 2: 1.25 - 1.5
+        110e16, // Level 3: 1.1 - 1.25
+        105e16, // Level 4: 1.05 - 1.1
+        100e16 // Level 5: 1.0 - 1.05
+    ];
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // CONSTRUCTOR & INITIALIZATION
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    constructor(
+        address _priceOracle,
+        address _lendingPool,
+        uint256 _defaultLiquidationThreshold,
+        uint256 /* _defaultLiquidationBonus */,
+        uint256 _maxLiquidationRatio
+    ) {
+        require(
+            _priceOracle != address(0),
+            "RiskManager: Invalid price oracle"
+        );
+        require(
+            _lendingPool != address(0),
+            "RiskManager: Invalid lending pool"
+        );
+        require(
+            _defaultLiquidationThreshold >= MIN_LIQUIDATION_THRESHOLD,
+            "RiskManager: Threshold too low"
+        );
+        require(
+            _defaultLiquidationThreshold <= MAX_LIQUIDATION_THRESHOLD,
+            "RiskManager: Threshold too high"
+        );
+
+        priceOracle = IPriceOracle(_priceOracle);
+        lendingPool = _lendingPool;
+        maxLiquidationRatio = _maxLiquidationRatio;
+
+        // Use config-based default values
+        maxHealthFactorForLiquidation = PRECISION; // 1.0
+        minHealthFactorForBorrow = 105e16; // 1.05 (slightly above liquidation)
+
+        // Initialize role management
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(ADMIN_ROLE, msg.sender);
+        _grantRole(RISK_ADMIN_ROLE, msg.sender);
+        _grantRole(POOL_ROLE, _lendingPool);
+
+        lastSystemUpdate = block.timestamp;
+    }
+
+    /**
+     * @notice Initialize risk parameters for multiple assets based on config
+     * @dev Called during deployment to set up initial risk parameters
+     */
+    function initializeAssetsWithConfig(
+        address[] calldata assets,
+        string[] calldata symbols,
+        uint256[] calldata ltvs,
+        uint256[] calldata liquidationThresholds,
+        uint256[] calldata liquidationPenalties,
+        uint256[] calldata supplyCaps,
+        uint256[] calldata borrowCaps
+    ) external onlyRole(ADMIN_ROLE) {
+        require(
+            assets.length == symbols.length &&
+                assets.length == ltvs.length &&
+                assets.length == liquidationThresholds.length &&
+                assets.length == liquidationPenalties.length &&
+                assets.length == supplyCaps.length &&
+                assets.length == borrowCaps.length,
+            "RiskManager: Array length mismatch"
+        );
+
+        for (uint256 i = 0; i < assets.length; i++) {
+            address asset = assets[i];
+
+            // Set risk parameters
+            assetRiskParams[asset] = RiskParameters({
+                liquidationThreshold: liquidationThresholds[i],
+                liquidationBonus: liquidationPenalties[i],
+                borrowFactor: ltvs[i],
+                supplyCap: supplyCaps[i],
+                borrowCap: borrowCaps[i],
+                isActive: true,
+                isFrozen: false
+            });
+
+            // Add to supported assets if not already added
+            if (!isAssetSupported[asset]) {
+                isAssetSupported[asset] = true;
+                supportedAssets.push(asset);
+            }
+
+            emit RiskParametersUpdated(
+                asset,
+                liquidationThresholds[i],
+                liquidationPenalties[i],
+                ltvs[i]
+            );
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // EXTERNAL VIEW FUNCTIONS (Interface Implementations)
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Calculate user's health factor
+     */
+    function calculateHealthFactor(
+        address user
+    ) external view override returns (uint256 healthFactor) {
+        return _calculateHealthFactor(user);
+    }
+
+    /**
+     * @notice Get comprehensive user risk data
+     */
+    function getUserRiskData(
+        address user
+    ) external view override returns (UserRiskData memory riskData) {
+        // Recalculate current values
+        (uint256 totalCollateral, uint256 totalBorrow) = _getUserPositionValues(
+            user
+        );
+        uint256 healthFactor = _calculateHealthFactor(user);
+        uint256 liquidationThreshold = _getUserLiquidationThreshold(user);
+        uint256 maxBorrowValue = totalCollateral.mulDiv(
+            liquidationThreshold,
+            PRECISION
+        );
+
+        return
+            UserRiskData({
+                totalCollateralValue: totalCollateral,
+                totalBorrowValue: totalBorrow,
+                healthFactor: healthFactor,
+                liquidationThreshold: liquidationThreshold,
+                maxBorrowValue: maxBorrowValue,
+                isLiquidatable: healthFactor < maxHealthFactorForLiquidation
+            });
+    }
+
+    /**
+     * @notice Calculate maximum borrowing capacity
+     */
+    function getMaxBorrowAmount(
+        address user,
+        address asset
+    ) external view override returns (uint256 maxBorrowAmount) {
+        (uint256 totalCollateral, ) = _getUserPositionValues(user);
+        uint256 liquidationThreshold = _getUserLiquidationThreshold(user);
+        uint256 maxBorrowValue = totalCollateral.mulDiv(
+            liquidationThreshold,
+            PRECISION
+        );
+
+        uint256 assetPrice = priceOracle.getPrice(asset);
+        return maxBorrowValue.mulDiv(PRECISION, assetPrice);
+    }
+
+    /**
+     * @notice Calculate maximum withdrawal amount
+     */
+    function getMaxWithdrawAmount(
+        address user,
+        address asset
+    ) external view override returns (uint256 maxWithdrawAmount) {
+        (uint256 totalCollateral, uint256 totalBorrow) = _getUserPositionValues(
+            user
+        );
+
+        if (totalBorrow == 0) {
+            // No debt, can withdraw everything
+            return _getUserAssetBalance(user, asset);
+        }
+
+        uint256 liquidationThreshold = _getUserLiquidationThreshold(user);
+        uint256 requiredCollateral = totalBorrow.mulDiv(
+            PRECISION,
+            liquidationThreshold
+        );
+
+        if (totalCollateral <= requiredCollateral) {
+            return 0; // Cannot withdraw anything
+        }
+
+        uint256 excessCollateral = totalCollateral - requiredCollateral;
+        uint256 assetPrice = priceOracle.getPrice(asset);
+        uint256 maxWithdrawValue = excessCollateral;
+
+        return maxWithdrawValue.mulDiv(PRECISION, assetPrice);
+    }
+
+    /**
+     * @notice Calculate liquidation amounts
+     */
+    function calculateLiquidationAmounts(
+        address /* user */,
+        address debtAsset,
+        address collateralAsset,
+        uint256 debtAmount
+    )
+        external
+        view
+        override
+        returns (uint256 collateralAmount, uint256 liquidationBonus)
+    {
+        uint256 debtPrice = priceOracle.getPrice(debtAsset);
+        uint256 collateralPrice = priceOracle.getPrice(collateralAsset);
+
+        uint256 liquidationBonusRate = assetRiskParams[collateralAsset]
+            .liquidationBonus;
+
+        // Calculate debt value in USD
+        uint256 debtValueUSD = debtAmount.mulDiv(debtPrice, PRECISION);
+
+        // Calculate collateral to seize (including bonus)
+        uint256 collateralValueUSD = debtValueUSD.mulDiv(
+            PRECISION + liquidationBonusRate,
+            PRECISION
+        );
+        collateralAmount = collateralValueUSD.mulDiv(
+            PRECISION,
+            collateralPrice
+        );
+
+        // Calculate liquidation bonus
+        liquidationBonus = debtValueUSD
+            .mulDiv(liquidationBonusRate, PRECISION)
+            .mulDiv(PRECISION, collateralPrice);
+
+        return (collateralAmount, liquidationBonus);
+    }
 
     /**
      * @notice Get positions at risk of liquidation
@@ -167,9 +467,598 @@ contract RiskManager is IRiskManager, AccessControl, Pausable {
         return (totalScore, actualFactors);
     }
 
+    /**
+     * @notice Get user's risk level (1-5 scale)
+     */
+    function getUserRiskLevel(
+        address user
+    ) external view override returns (uint8 riskLevel) {
+        uint256 healthFactor = _calculateHealthFactor(user);
+
+        if (healthFactor == type(uint256).max) return 1; // No debt
+
+        for (uint8 i = 0; i < 5; i++) {
+            if (healthFactor >= riskLevelThresholds[i]) {
+                return i + 1;
+            }
+        }
+
+        return 5; // Highest risk
+    }
+
+    /**
+     * @notice Get asset risk metrics
+     */
+    function getAssetRisk(
+        address asset
+    ) external view override returns (AssetRisk memory assetRisk) {
+        uint256 collateralValue = _getAssetTotalCollateralValue(asset);
+        uint256 borrowValue = _getAssetTotalBorrowValue(asset);
+        uint256 utilizationRate = collateralValue > 0
+            ? borrowValue.mulDiv(PRECISION, collateralValue)
+            : 0;
+
+        return
+            AssetRisk({
+                asset: asset,
+                collateralValue: collateralValue,
+                borrowValue: borrowValue,
+                utilizationRate: utilizationRate,
+                volatilityScore: _getAssetVolatilityScore(asset),
+                liquidityScore: _getAssetLiquidityScore(asset)
+            });
+    }
+
+    /**
+     * @notice Get portfolio diversification score
+     */
+    function getPortfolioDiversification(
+        address user
+    ) external view override returns (uint256 diversificationScore) {
+        // Calculate Herfindahl-Hirschman Index for portfolio concentration
+        uint256[] memory assetShares = new uint256[](supportedAssets.length);
+        uint256 totalValue = 0;
+
+        for (uint256 i = 0; i < supportedAssets.length; i++) {
+            uint256 assetValue = _getUserAssetValue(user, supportedAssets[i]);
+            assetShares[i] = assetValue;
+            totalValue += assetValue;
+        }
+
+        if (totalValue == 0) return 100; // Perfectly diversified (no positions)
+
+        uint256 hhi = 0;
+        for (uint256 i = 0; i < assetShares.length; i++) {
+            uint256 share = assetShares[i].mulDiv(PRECISION, totalValue);
+            hhi += share.mulDiv(share, PRECISION);
+        }
+
+        // Convert HHI to diversification score (lower HHI = higher diversification)
+        diversificationScore = PRECISION - hhi;
+        return diversificationScore.mulDiv(100, PRECISION); // Convert to 0-100 scale
+    }
+
+    /**
+     * @notice Calculate value at risk (VaR)
+     */
+    function calculateValueAtRisk(
+        address user,
+        uint256 confidenceLevel,
+        uint256 timeHorizon
+    ) external view override returns (uint256 valueAtRisk) {
+        (uint256 totalCollateral, ) = _getUserPositionValues(user);
+
+        if (totalCollateral == 0) return 0;
+
+        // Simplified VaR calculation using historical volatility
+        uint256 portfolioVolatility = _calculatePortfolioVolatility(user);
+
+        // Z-score for confidence level (simplified)
+        uint256 zScore = _getZScore(confidenceLevel);
+
+        // VaR = Portfolio Value * Z-Score * Volatility * sqrt(Time Horizon)
+        uint256 timeAdjustment = Math.sqrt(timeHorizon * PRECISION);
+        valueAtRisk = totalCollateral
+            .mulDiv(zScore, PRECISION)
+            .mulDiv(portfolioVolatility, PRECISION)
+            .mulDiv(timeAdjustment, PRECISION);
+
+        return valueAtRisk;
+    }
+
+    /**
+     * @notice Get stress test results
+     */
+    function stressTest(
+        address user,
+        int256[] calldata priceShocks
+    )
+        external
+        view
+        override
+        returns (
+            uint256[] memory healthFactors,
+            bool[] memory wouldBeLiquidated
+        )
+    {
+        healthFactors = new uint256[](priceShocks.length);
+        wouldBeLiquidated = new bool[](priceShocks.length);
+
+        for (uint256 i = 0; i < priceShocks.length; i++) {
+            uint256 healthFactor = _calculateHealthFactorWithPriceShock(
+                user,
+                priceShocks[i]
+            );
+            healthFactors[i] = healthFactor;
+            wouldBeLiquidated[i] = healthFactor < maxHealthFactorForLiquidation;
+        }
+
+        return (healthFactors, wouldBeLiquidated);
+    }
+
+    /**
+     * @notice Get risk parameters for an asset
+     */
+    function getRiskParameters(
+        address asset
+    ) external view override returns (RiskParameters memory) {
+        return assetRiskParams[asset];
+    }
+
+    /**
+     * @notice Get liquidation threshold for an asset
+     */
+    function getLiquidationThreshold(
+        address asset
+    ) external view override returns (uint256) {
+        return assetRiskParams[asset].liquidationThreshold;
+    }
+
+    /**
+     * @notice Get liquidation bonus for an asset
+     */
+    function getLiquidationBonus(
+        address asset
+    ) external view override returns (uint256) {
+        return assetRiskParams[asset].liquidationBonus;
+    }
+
+    /**
+     * @notice Get borrow factor for an asset
+     */
+    function getBorrowFactor(
+        address asset
+    ) external view override returns (uint256) {
+        return assetRiskParams[asset].borrowFactor;
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════════════
-    // INTERNAL FUNCTIONS
+    // VALIDATION FUNCTIONS (Interface Implementations)
     // ═══════════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Check if borrow operation is allowed
+     */
+    function isBorrowAllowed(
+        address user,
+        address asset,
+        uint256 amount
+    ) external view override returns (bool isAllowed, string memory reason) {
+        if (!isAssetSupported[asset]) {
+            return (false, "Asset not supported");
+        }
+
+        if (assetRiskParams[asset].isFrozen) {
+            return (false, "Asset is frozen");
+        }
+
+        // Check borrow cap
+        uint256 currentBorrow = _getAssetTotalBorrow(asset);
+        if (currentBorrow + amount > assetRiskParams[asset].borrowCap) {
+            return (false, "Borrow cap exceeded");
+        }
+
+        // Check health factor after borrow
+        uint256 newHealthFactor = _calculateHealthFactorAfterBorrow(
+            user,
+            asset,
+            amount
+        );
+        if (newHealthFactor < minHealthFactorForBorrow) {
+            return (false, "Health factor too low");
+        }
+
+        return (true, "");
+    }
+
+    /**
+     * @notice Check if withdrawal is allowed
+     */
+    function isWithdrawAllowed(
+        address user,
+        address asset,
+        uint256 amount
+    ) external view override returns (bool isAllowed, string memory reason) {
+        if (!isAssetSupported[asset]) {
+            return (false, "Asset not supported");
+        }
+
+        // Check if user has sufficient balance
+        uint256 userBalance = _getUserAssetBalance(user, asset);
+        if (amount > userBalance) {
+            return (false, "Insufficient balance");
+        }
+
+        // Check health factor after withdrawal
+        uint256 newHealthFactor = _calculateHealthFactorAfterWithdraw(
+            user,
+            asset,
+            amount
+        );
+        if (
+            newHealthFactor < minHealthFactorForBorrow &&
+            newHealthFactor != type(uint256).max
+        ) {
+            return (false, "Health factor too low");
+        }
+
+        return (true, "");
+    }
+
+    /**
+     * @notice Check if liquidation is allowed
+     */
+    function isLiquidationAllowed(
+        address user
+    ) external view override returns (bool isAllowed, uint256 healthFactor) {
+        healthFactor = _calculateHealthFactor(user);
+        isAllowed = healthFactor < maxHealthFactorForLiquidation;
+
+        return (isAllowed, healthFactor);
+    }
+
+    /**
+     * @notice Validate supply operation
+     */
+    function validateSupply(
+        address /* user */,
+        address asset,
+        uint256 amount
+    ) external view override returns (bool isValid, string memory reason) {
+        if (!isAssetSupported[asset]) {
+            return (false, "Asset not supported");
+        }
+
+        if (assetRiskParams[asset].isFrozen) {
+            return (false, "Asset is frozen");
+        }
+
+        // Check supply cap
+        uint256 currentSupply = _getAssetTotalSupply(asset);
+        if (currentSupply + amount > assetRiskParams[asset].supplyCap) {
+            return (false, "Supply cap exceeded");
+        }
+
+        return (true, "");
+    }
+
+    /**
+     * @notice Validate repay operation
+     */
+    function validateRepay(
+        address user,
+        address asset,
+        uint256 amount
+    ) external view override returns (bool isValid, string memory reason) {
+        if (!isAssetSupported[asset]) {
+            return (false, "Asset not supported");
+        }
+
+        uint256 userDebt = _getUserAssetDebt(user, asset);
+        if (amount > userDebt) {
+            return (false, "Repay amount exceeds debt");
+        }
+
+        return (true, "");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // EXTERNAL STATE-CHANGING FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Update user risk data (called by lending pool or internally)
+     * @dev Enhanced with real-time data from HyperLendPool
+     */
+    function updateUserRiskData(
+        address user,
+        uint256 userTotalCollateralValue,
+        uint256 userTotalBorrowValue
+    ) external onlyRole(POOL_ROLE) {
+        _updateUserRiskDataInternal(
+            user,
+            userTotalCollateralValue,
+            userTotalBorrowValue
+        );
+    }
+
+    /**
+     * @notice Manual update of user risk data by fetching from HyperLendPool
+     * @dev Can be called by admins or the user themselves for real-time updates
+     */
+    function refreshUserRiskData(address user) external {
+        require(
+            user == msg.sender || hasRole(ADMIN_ROLE, msg.sender),
+            "RiskManager: Not authorized to refresh user data"
+        );
+
+        // Fetch real-time data from HyperLendPool
+        (uint256 totalCollateral, uint256 totalBorrow) = _getUserPositionValues(
+            user
+        );
+
+        // Update with fresh data
+        _updateUserRiskDataInternal(user, totalCollateral, totalBorrow);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // ADMIN FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Set risk parameters for an asset
+     */
+    function setRiskParameters(
+        address asset,
+        uint256 liquidationThreshold,
+        uint256 liquidationBonus,
+        uint256 borrowFactor
+    ) external override onlyRole(RISK_ADMIN_ROLE) {
+        require(asset != address(0), "RiskManager: Invalid asset");
+        require(
+            liquidationThreshold >= MIN_LIQUIDATION_THRESHOLD,
+            "RiskManager: Threshold too low"
+        );
+        require(
+            liquidationThreshold <= MAX_LIQUIDATION_THRESHOLD,
+            "RiskManager: Threshold too high"
+        );
+        require(
+            liquidationBonus <= MAX_LIQUIDATION_BONUS,
+            "RiskManager: Bonus too high"
+        );
+        require(
+            borrowFactor <= MAX_BORROW_FACTOR,
+            "RiskManager: Borrow factor too high"
+        );
+
+        assetRiskParams[asset].liquidationThreshold = liquidationThreshold;
+        assetRiskParams[asset].liquidationBonus = liquidationBonus;
+        assetRiskParams[asset].borrowFactor = borrowFactor;
+
+        if (!isAssetSupported[asset]) {
+            isAssetSupported[asset] = true;
+            supportedAssets.push(asset);
+        }
+
+        emit RiskParametersUpdated(
+            asset,
+            liquidationThreshold,
+            liquidationBonus,
+            borrowFactor
+        );
+    }
+    /**
+     * @notice Set supply and borrow caps
+     */
+    function setCaps(
+        address asset,
+        uint256 supplyCap,
+        uint256 borrowCap
+    ) external override onlyRole(RISK_ADMIN_ROLE) {
+        require(isAssetSupported[asset], "RiskManager: Asset not supported");
+
+        assetRiskParams[asset].supplyCap = supplyCap;
+        assetRiskParams[asset].borrowCap = borrowCap;
+    }
+
+    /**
+     * @notice Freeze or unfreeze an asset
+     */
+    function setAssetFrozen(
+        address asset,
+        bool frozen
+    ) external override onlyRole(ADMIN_ROLE) {
+        require(isAssetSupported[asset], "RiskManager: Asset not supported");
+        assetRiskParams[asset].isFrozen = frozen;
+    }
+
+    /**
+     * @notice Set global risk parameters
+     */
+    function setGlobalRiskParameters(
+        uint256 _maxHealthFactorForLiquidation,
+        uint256 _minHealthFactorForBorrow,
+        uint256 _maxLiquidationRatio
+    ) external override onlyRole(ADMIN_ROLE) {
+        require(
+            _maxHealthFactorForLiquidation <= PRECISION,
+            "RiskManager: Invalid liquidation HF"
+        );
+        require(
+            _minHealthFactorForBorrow >= PRECISION,
+            "RiskManager: Invalid borrow HF"
+        );
+        require(
+            _maxLiquidationRatio <= PRECISION,
+            "RiskManager: Invalid liquidation ratio"
+        );
+
+        maxHealthFactorForLiquidation = _maxHealthFactorForLiquidation;
+        minHealthFactorForBorrow = _minHealthFactorForBorrow;
+        maxLiquidationRatio = _maxLiquidationRatio;
+    }
+
+    /**
+     * @notice Emergency pause all operations
+     */
+    function emergencyPause() external override onlyRole(ADMIN_ROLE) {
+        _pause();
+        emit EmergencyAction("PAUSE", msg.sender, block.timestamp);
+    }
+
+    /**
+     * @notice Resume operations after emergency pause
+     */
+    function emergencyResume() external override onlyRole(ADMIN_ROLE) {
+        _unpause();
+        emit EmergencyAction("RESUME", msg.sender, block.timestamp);
+    }
+
+    /**
+     * @notice Batch update risk parameters for multiple assets
+     * @dev Gas-optimized function for updating multiple assets at once
+     */
+    function batchUpdateRiskParameters(
+        address[] calldata assets,
+        uint256[] calldata liquidationThresholds,
+        uint256[] calldata liquidationBonuses,
+        uint256[] calldata borrowFactors
+    ) external onlyRole(RISK_ADMIN_ROLE) {
+        require(
+            assets.length == liquidationThresholds.length &&
+                assets.length == liquidationBonuses.length &&
+                assets.length == borrowFactors.length,
+            "RiskManager: Array length mismatch"
+        );
+
+        for (uint256 i = 0; i < assets.length; i++) {
+            _setRiskParametersInternal(
+                assets[i],
+                liquidationThresholds[i],
+                liquidationBonuses[i],
+                borrowFactors[i]
+            );
+        }
+    }
+
+    /**
+     * @notice Emergency freeze/unfreeze multiple assets
+     */
+    function emergencyFreezeAssets(
+        address[] calldata assets,
+        bool frozen
+    ) external onlyRole(ADMIN_ROLE) {
+        for (uint256 i = 0; i < assets.length; i++) {
+            _setAssetFrozenInternal(assets[i], frozen);
+        }
+
+        emit EmergencyAction(
+            frozen ? "FREEZE_ASSETS" : "UNFREEZE_ASSETS",
+            msg.sender,
+            block.timestamp
+        );
+    }
+
+    /**
+     * @notice Update system risk thresholds
+     */
+    function updateSystemRiskThresholds(
+        uint256[5] calldata newThresholds
+    ) external onlyRole(RISK_ADMIN_ROLE) {
+        require(
+            newThresholds[0] > newThresholds[1] &&
+                newThresholds[1] > newThresholds[2] &&
+                newThresholds[2] > newThresholds[3] &&
+                newThresholds[3] > newThresholds[4],
+            "RiskManager: Invalid threshold order"
+        );
+
+        riskLevelThresholds = newThresholds;
+        emit SystemParametersUpdated("RISK_THRESHOLDS", msg.sender);
+    }
+
+    /**
+     * @notice Force update of system metrics
+     */
+    function forceSystemMetricsUpdate() external onlyRole(ADMIN_ROLE) {
+        _updateSystemMetrics();
+        emit SystemParametersUpdated("FORCE_METRICS_UPDATE", msg.sender);
+    }
+
+    /**
+     * @notice Clean up stale user risk tracking
+     * @dev Removes users from risk tracking if they no longer have positions
+     */
+    function cleanupStaleRiskTracking(
+        address[] calldata users
+    ) external onlyRole(ADMIN_ROLE) {
+        for (uint256 i = 0; i < users.length; i++) {
+            address user = users[i];
+
+            // Check if user still has positions
+            (uint256 collateral, uint256 borrow) = _getUserPositionValues(user);
+
+            // Remove from tracking if no positions
+            if (collateral == 0 && borrow == 0 && isUserTracked[user]) {
+                _removeFromRiskTracking(user);
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // INTERNAL CORE FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Internal function to update user risk data with comprehensive analysis
+     */
+    function _updateUserRiskDataInternal(
+        address user,
+        uint256 userTotalCollateralValue,
+        uint256 userTotalBorrowValue
+    ) internal {
+        // Get current data for comparison
+        UserRiskData storage userData = userRiskData[user];
+        uint256 oldHealthFactor = userData.healthFactor;
+
+        // Calculate weighted liquidation threshold for user's portfolio
+        uint256 liquidationThreshold = _getUserLiquidationThreshold(user);
+
+        // Calculate health factor
+        uint256 healthFactor = userTotalBorrowValue > 0
+            ? userTotalCollateralValue.mulDiv(
+                liquidationThreshold,
+                userTotalBorrowValue
+            )
+            : type(uint256).max;
+
+        // Calculate maximum borrowing capacity
+        uint256 maxBorrowValue = userTotalCollateralValue.mulDiv(
+            liquidationThreshold,
+            PRECISION
+        );
+
+        // Update user risk data
+        userData.totalCollateralValue = userTotalCollateralValue;
+        userData.totalBorrowValue = userTotalBorrowValue;
+        userData.healthFactor = healthFactor;
+        userData.liquidationThreshold = liquidationThreshold;
+        userData.maxBorrowValue = maxBorrowValue;
+        userData.isLiquidatable = healthFactor < maxHealthFactorForLiquidation;
+
+        // Update timestamp
+        userLastUpdate[user] = block.timestamp;
+
+        // Update risk tracking and system metrics
+        _updateRiskTracking(user, oldHealthFactor, healthFactor);
+
+        // Emit events
+        emit HealthFactorUpdated(user, oldHealthFactor, healthFactor);
+
+        // Update system-wide metrics
+        _updateSystemMetrics();
+    }
 
     function _calculateHealthFactor(
         address user
@@ -192,10 +1081,39 @@ contract RiskManager is IRiskManager, AccessControl, Pausable {
     function _getUserPositionValues(
         address user
     ) internal view returns (uint256 totalCollateral, uint256 totalBorrow) {
-        // This would typically interface with the lending pool
-        // For now, we'll use stored data
-        UserRiskData memory data = userRiskData[user];
-        return (data.totalCollateralValue, data.totalBorrowValue);
+        // Get real-time data from HyperLendPool
+        IHyperLendPool pool = IHyperLendPool(lendingPool);
+
+        try pool.getUserAccountData(user) returns (
+            uint256 collateralValue,
+            uint256 borrowValue,
+            uint256, // healthFactor
+            bool // isLiquidatable
+        ) {
+            return (collateralValue, borrowValue);
+        } catch {
+            // Fallback: Calculate manually from individual markets
+            totalCollateral = 0;
+            totalBorrow = 0;
+
+            for (uint256 i = 0; i < supportedAssets.length; i++) {
+                address asset = supportedAssets[i];
+
+                // Get user's collateral value for this asset
+                uint256 userBalance = _getUserAssetBalance(user, asset);
+                if (userBalance > 0) {
+                    uint256 price = priceOracle.getPrice(asset);
+                    totalCollateral += userBalance.mulDiv(price, PRECISION);
+                }
+
+                // Get user's borrow value for this asset
+                uint256 userDebt = _getUserAssetDebt(user, asset);
+                if (userDebt > 0) {
+                    uint256 price = priceOracle.getPrice(asset);
+                    totalBorrow += userDebt.mulDiv(price, PRECISION);
+                }
+            }
+        }
     }
 
     function _getUserLiquidationThreshold(
@@ -330,29 +1248,96 @@ contract RiskManager is IRiskManager, AccessControl, Pausable {
     function _calculatePortfolioVolatility(
         address user
     ) internal view returns (uint256) {
-        // Simplified portfolio volatility calculation
-        // In practice, this would use correlation matrices and individual asset volatilities
-        uint256 totalVolatility = 0;
-        uint256 totalWeight = 0;
+        // Enhanced portfolio volatility calculation with correlation considerations
+        uint256 totalPortfolioValue = 0;
+        uint256 weightedVolatilitySquared = 0;
 
+        // Calculate individual asset volatilities and weights
+        uint256[] memory assetValues = new uint256[](supportedAssets.length);
+        uint256[] memory assetVolatilities = new uint256[](
+            supportedAssets.length
+        );
+
+        // First pass: get asset values and total portfolio value
         for (uint256 i = 0; i < supportedAssets.length; i++) {
             address asset = supportedAssets[i];
             uint256 assetValue = _getUserAssetValue(user, asset);
+            assetValues[i] = assetValue;
+            totalPortfolioValue += assetValue;
+        }
 
-            if (assetValue > 0) {
-                uint256 assetVolatility = _getAssetVolatilityScore(asset);
-                totalVolatility += assetValue.mulDiv(
-                    assetVolatility,
+        if (totalPortfolioValue == 0) return 0;
+
+        // Second pass: calculate weighted volatility with correlation effects
+        for (uint256 i = 0; i < supportedAssets.length; i++) {
+            if (assetValues[i] == 0) continue;
+
+            address asset = supportedAssets[i];
+            uint256 assetVolatility = _getAssetVolatilityScore(asset);
+            assetVolatilities[i] = assetVolatility;
+
+            uint256 weight = assetValues[i].mulDiv(
+                PRECISION,
+                totalPortfolioValue
+            );
+
+            // Individual variance contribution
+            uint256 varianceContribution = weight
+                .mulDiv(weight, PRECISION)
+                .mulDiv(
+                    assetVolatility.mulDiv(assetVolatility, PRECISION),
                     PRECISION
                 );
-                totalWeight += assetValue;
+            weightedVolatilitySquared += varianceContribution;
+
+            // Correlation effects (simplified: assume moderate positive correlation)
+            for (uint256 j = i + 1; j < supportedAssets.length; j++) {
+                if (assetValues[j] == 0) continue;
+
+                uint256 weightJ = assetValues[j].mulDiv(
+                    PRECISION,
+                    totalPortfolioValue
+                );
+                uint256 correlation = _getAssetCorrelation(
+                    supportedAssets[i],
+                    supportedAssets[j]
+                );
+
+                // 2 * weight_i * weight_j * vol_i * vol_j * correlation
+                uint256 correlationContribution = 2 *
+                    weight
+                        .mulDiv(weightJ, PRECISION)
+                        .mulDiv(assetVolatility, PRECISION)
+                        .mulDiv(assetVolatilities[j], PRECISION)
+                        .mulDiv(correlation, PRECISION);
+
+                weightedVolatilitySquared += correlationContribution;
             }
         }
 
-        return
-            totalWeight > 0
-                ? totalVolatility.mulDiv(PRECISION, totalWeight)
-                : 0;
+        // Return portfolio volatility (sqrt of variance)
+        return Math.sqrt(weightedVolatilitySquared * PRECISION);
+    }
+
+    /**
+     * @notice Get correlation coefficient between two assets
+     * @dev Simplified correlation model - in production would use historical data
+     */
+    function _getAssetCorrelation(
+        address asset1,
+        address asset2
+    ) internal pure returns (uint256) {
+        if (asset1 == asset2) return PRECISION; // Perfect correlation with self
+
+        // Simplified correlation matrix based on asset types
+        // In production, this would use historical price correlation data
+
+        // Default moderate positive correlation for most crypto assets
+        uint256 defaultCorrelation = 60e16; // 0.6
+
+        // Higher correlation for similar asset types (would need asset registry)
+        // For now, return moderate correlation
+        return defaultCorrelation;
     }
 
     function _getZScore(
@@ -370,280 +1355,56 @@ contract RiskManager is IRiskManager, AccessControl, Pausable {
         view
         returns (uint256)
     {
-        // Calculate Herfindahl-Hirschman Index for asset concentration
-        uint256 totalValue = totalCollateralValue + totalBorrowValue;
-        if (totalValue == 0) return 0;
+        // Calculate Herfindahl-Hirschman Index for asset concentration using real market data
+        uint256 totalSystemValue = totalCollateralValue + totalBorrowValue;
+        if (totalSystemValue == 0) return 0;
 
         uint256 hhi = 0;
         for (uint256 i = 0; i < supportedAssets.length; i++) {
-            uint256 assetValue = _getAssetTotalValue(supportedAssets[i]);
-            uint256 share = assetValue.mulDiv(PRECISION, totalValue);
-            hhi += share.mulDiv(share, PRECISION);
+            address asset = supportedAssets[i];
+            uint256 assetCollateralValue = _getAssetTotalCollateralValue(asset);
+            uint256 assetBorrowValue = _getAssetTotalBorrowValue(asset);
+            uint256 assetTotalValue = assetCollateralValue + assetBorrowValue;
+
+            if (assetTotalValue > 0) {
+                uint256 share = assetTotalValue.mulDiv(
+                    PRECISION,
+                    totalSystemValue
+                );
+                hhi += share.mulDiv(share, PRECISION);
+            }
         }
 
-        // Convert to risk score (0-25 scale)
+        // Convert HHI to risk score (0-25 scale)
+        // Higher HHI = higher concentration = higher risk
         return hhi.mulDiv(25, PRECISION);
     }
 
     function _calculateMarketVolatilityRisk() internal view returns (uint256) {
-        // Simplified market volatility risk calculation
-        uint256 totalVolatility = 0;
-        uint256 assetCount = 0;
+        // Calculate weighted average volatility based on actual market exposure
+        uint256 totalWeightedVolatility = 0;
+        uint256 totalValue = totalCollateralValue + totalBorrowValue;
+
+        if (totalValue == 0) return 0;
 
         for (uint256 i = 0; i < supportedAssets.length; i++) {
-            uint256 volatility = _getAssetVolatilityScore(supportedAssets[i]);
-            totalVolatility += volatility;
-            assetCount++;
-        }
+            address asset = supportedAssets[i];
+            uint256 assetValue = _getAssetTotalValue(asset);
 
-        uint256 avgVolatility = assetCount > 0
-            ? totalVolatility / assetCount
-            : 0;
+            if (assetValue > 0) {
+                uint256 volatility = _getAssetVolatilityScore(asset);
+                uint256 weight = assetValue.mulDiv(PRECISION, totalValue);
+                totalWeightedVolatility += volatility.mulDiv(weight, PRECISION);
+            }
+        }
 
         // Convert to risk score (0-25 scale)
-        return avgVolatility > 50e16 ? 25 : avgVolatility.mulDiv(50, PRECISION);
-    }
+        // Cap at 100% volatility for score calculation
+        uint256 normalizedVolatility = totalWeightedVolatility > PRECISION
+            ? PRECISION
+            : totalWeightedVolatility;
 
-    // Helper functions (would interface with lending pool in practice)
-    function _getUserAssetBalance(
-        address /* user */,
-        address /* asset */
-    ) internal pure returns (uint256) {
-        // Placeholder - would query lending pool
-        return 0;
-    }
-
-    function _getUserAssetDebt(
-        address /* user */,
-        address /* asset */
-    ) internal pure returns (uint256) {
-        // Placeholder - would query lending pool
-        return 0;
-    }
-
-    function _getUserAssetCollateral(
-        address /* user */,
-        address /* asset */
-    ) internal pure returns (uint256) {
-        // Placeholder - would query lending pool
-        return 0;
-    }
-
-    function _getUserAssetValue(
-        address /* user */,
-        address /* asset */
-    ) internal pure returns (uint256) {
-        // Placeholder - would query lending pool and price oracle
-        return 0;
-    }
-
-    function _getAssetTotalSupply(
-        address /* asset */
-    ) internal pure returns (uint256) {
-        // Placeholder - would query lending pool
-        return 0;
-    }
-
-    function _getAssetTotalBorrow(
-        address /* asset */
-    ) internal pure returns (uint256) {
-        // Placeholder - would query lending pool
-        return 0;
-    }
-
-    function _getAssetTotalCollateralValue(
-        address /* asset */
-    ) internal pure returns (uint256) {
-        // Placeholder - would calculate from lending pool data
-        return 0;
-    }
-
-    function _getAssetTotalBorrowValue(
-        address /* asset */
-    ) internal pure returns (uint256) {
-        // Placeholder - would calculate from lending pool data
-        return 0;
-    }
-
-    function _getAssetTotalValue(
-        address asset
-    ) internal pure returns (uint256) {
-        return
-            _getAssetTotalCollateralValue(asset) +
-            _getAssetTotalBorrowValue(asset);
-    }
-
-    function _getAssetVolatilityScore(
-        address /* asset */
-    ) internal pure returns (uint256) {
-        // Placeholder - would query price oracle for historical volatility
-        return 20e16; // Default 20%
-    }
-
-    function _getAssetLiquidityScore(
-        address /* asset */
-    ) internal pure returns (uint256) {
-        // Placeholder - would calculate based on trading volume and market depth
-        return 80e16; // Default 80%
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // CONFIGURATION FUNCTIONS
-    // ═══════════════════════════════════════════════════════════════════════════════════
-
-    function getRiskParameters(
-        address asset
-    ) external view override returns (RiskParameters memory) {
-        return assetRiskParams[asset];
-    }
-
-    function getLiquidationThreshold(
-        address asset
-    ) external view override returns (uint256) {
-        return assetRiskParams[asset].liquidationThreshold;
-    }
-
-    function getLiquidationBonus(
-        address asset
-    ) external view override returns (uint256) {
-        return assetRiskParams[asset].liquidationBonus;
-    }
-
-    function getBorrowFactor(
-        address asset
-    ) external view override returns (uint256) {
-        return assetRiskParams[asset].borrowFactor;
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // ADMIN FUNCTIONS
-    // ═══════════════════════════════════════════════════════════════════════════════════
-
-    function setRiskParameters(
-        address asset,
-        uint256 liquidationThreshold,
-        uint256 liquidationBonus,
-        uint256 borrowFactor
-    ) external override onlyRole(RISK_ADMIN_ROLE) {
-        require(asset != address(0), "RiskManager: Invalid asset");
-        require(
-            liquidationThreshold >= MIN_LIQUIDATION_THRESHOLD,
-            "RiskManager: Threshold too low"
-        );
-        require(
-            liquidationThreshold <= MAX_LIQUIDATION_THRESHOLD,
-            "RiskManager: Threshold too high"
-        );
-        require(
-            liquidationBonus <= MAX_LIQUIDATION_BONUS,
-            "RiskManager: Bonus too high"
-        );
-        require(
-            borrowFactor <= MAX_BORROW_FACTOR,
-            "RiskManager: Borrow factor too high"
-        );
-
-        assetRiskParams[asset].liquidationThreshold = liquidationThreshold;
-        assetRiskParams[asset].liquidationBonus = liquidationBonus;
-        assetRiskParams[asset].borrowFactor = borrowFactor;
-
-        if (!isAssetSupported[asset]) {
-            isAssetSupported[asset] = true;
-            supportedAssets.push(asset);
-        }
-
-        emit RiskParametersUpdated(
-            asset,
-            liquidationThreshold,
-            liquidationBonus,
-            borrowFactor
-        );
-    }
-
-    function setCaps(
-        address asset,
-        uint256 supplyCap,
-        uint256 borrowCap
-    ) external override onlyRole(RISK_ADMIN_ROLE) {
-        require(isAssetSupported[asset], "RiskManager: Asset not supported");
-
-        assetRiskParams[asset].supplyCap = supplyCap;
-        assetRiskParams[asset].borrowCap = borrowCap;
-    }
-
-    function setAssetFrozen(
-        address asset,
-        bool frozen
-    ) external override onlyRole(ADMIN_ROLE) {
-        require(isAssetSupported[asset], "RiskManager: Asset not supported");
-        assetRiskParams[asset].isFrozen = frozen;
-    }
-
-    function setGlobalRiskParameters(
-        uint256 _maxHealthFactorForLiquidation,
-        uint256 _minHealthFactorForBorrow,
-        uint256 _maxLiquidationRatio
-    ) external override onlyRole(ADMIN_ROLE) {
-        require(
-            _maxHealthFactorForLiquidation <= PRECISION,
-            "RiskManager: Invalid liquidation HF"
-        );
-        require(
-            _minHealthFactorForBorrow >= PRECISION,
-            "RiskManager: Invalid borrow HF"
-        );
-        require(
-            _maxLiquidationRatio <= PRECISION,
-            "RiskManager: Invalid liquidation ratio"
-        );
-
-        maxHealthFactorForLiquidation = _maxHealthFactorForLiquidation;
-        minHealthFactorForBorrow = _minHealthFactorForBorrow;
-        maxLiquidationRatio = _maxLiquidationRatio;
-    }
-
-    function emergencyPause() external override onlyRole(ADMIN_ROLE) {
-        _pause();
-    }
-
-    function emergencyResume() external override onlyRole(ADMIN_ROLE) {
-        _unpause();
-    }
-
-    /**
-     * @notice Update user risk data (called by lending pool)
-     */
-    function updateUserRiskData(
-        address user,
-        uint256 userTotalCollateralValue,
-        uint256 userTotalBorrowValue
-    ) external onlyRole(POOL_ROLE) {
-        uint256 healthFactor = userTotalBorrowValue > 0
-            ? userTotalCollateralValue.mulDiv(
-                _getUserLiquidationThreshold(user),
-                userTotalBorrowValue
-            )
-            : type(uint256).max;
-
-        UserRiskData storage userData = userRiskData[user];
-        uint256 oldHealthFactor = userData.healthFactor;
-
-        userData.totalCollateralValue = userTotalCollateralValue;
-        userData.totalBorrowValue = userTotalBorrowValue;
-        userData.healthFactor = healthFactor;
-        userData.liquidationThreshold = _getUserLiquidationThreshold(user);
-        userData.maxBorrowValue = userTotalCollateralValue.mulDiv(
-            userData.liquidationThreshold,
-            PRECISION
-        );
-        userData.isLiquidatable = healthFactor < maxHealthFactorForLiquidation;
-
-        userLastUpdate[user] = block.timestamp;
-
-        // Update risk tracking
-        _updateRiskTracking(user, oldHealthFactor, healthFactor);
-
-        emit HealthFactorUpdated(user, oldHealthFactor, healthFactor);
+        return normalizedVolatility.mulDiv(25, PRECISION);
     }
 
     function _updateRiskTracking(
@@ -706,19 +1467,52 @@ contract RiskManager is IRiskManager, AccessControl, Pausable {
     }
 
     function _updateSystemMetrics() internal {
-        // Update system-wide risk metrics
-        // This is a simplified implementation
+        // Update system-wide risk metrics with real market data
         lastSystemUpdate = block.timestamp;
 
-        // Calculate average health factor
+        // Calculate total system values from actual markets
+        uint256 newTotalCollateralValue = 0;
+        uint256 newTotalBorrowValue = 0;
+
+        for (uint256 i = 0; i < supportedAssets.length; i++) {
+            address asset = supportedAssets[i];
+            newTotalCollateralValue += _getAssetTotalCollateralValue(asset);
+            newTotalBorrowValue += _getAssetTotalBorrowValue(asset);
+        }
+
+        totalCollateralValue = newTotalCollateralValue;
+        totalBorrowValue = newTotalBorrowValue;
+
+        // Calculate average health factor and positions at risk
         uint256 totalHealthFactor = 0;
         uint256 userCount = 0;
         uint256 riskCount = 0;
 
         for (uint256 i = 0; i < riskUsers.length; i++) {
-            uint256 hf = userRiskData[riskUsers[i]].healthFactor;
-            if (hf != type(uint256).max) {
-                totalHealthFactor += hf;
+            address user = riskUsers[i];
+            UserRiskData memory userData = userRiskData[user];
+
+            // Update user data if stale (older than 5 minutes)
+            if (block.timestamp - userLastUpdate[user] > 300) {
+                (
+                    uint256 currentCollateral,
+                    uint256 currentBorrow
+                ) = _getUserPositionValues(user);
+                if (currentCollateral > 0 || currentBorrow > 0) {
+                    _updateUserRiskDataInternal(
+                        user,
+                        currentCollateral,
+                        currentBorrow
+                    );
+                    userData = userRiskData[user]; // Get updated data
+                }
+            }
+
+            uint256 hf = userData.healthFactor;
+            if (hf != type(uint256).max && userData.totalBorrowValue > 0) {
+                // Cap health factor at 10 for average calculation to avoid skewing
+                uint256 cappedHF = hf > 10e18 ? 10e18 : hf;
+                totalHealthFactor += cappedHF;
                 userCount++;
 
                 if (hf < maxHealthFactorForLiquidation) {
@@ -731,497 +1525,236 @@ contract RiskManager is IRiskManager, AccessControl, Pausable {
             ? totalHealthFactor / userCount
             : type(uint256).max;
         positionsAtRisk = riskCount;
+
+        // Emit system metrics update event (if interface supports it)
+        // emit SystemMetricsUpdated(totalCollateralValue, totalBorrowValue, averageHealthFactor, positionsAtRisk);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════════
-    // CONSTANTS
+    // HYPERLENDPOOL INTEGRATION FUNCTIONS
     // ═══════════════════════════════════════════════════════════════════════════════════
 
-    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-    bytes32 public constant RISK_ADMIN_ROLE = keccak256("RISK_ADMIN_ROLE");
-    bytes32 public constant POOL_ROLE = keccak256("POOL_ROLE");
+    /**
+     * @notice Get user's balance for a specific asset (supply shares converted to amount)
+     */
+    function _getUserAssetBalance(
+        address user,
+        address asset
+    ) internal view returns (uint256) {
+        // NOTE: This is a simplified implementation for production readiness
+        // In production, this would need proper integration with hlToken contracts
+        // or additional interface methods to get user-specific asset balances
 
-    uint256 public constant PRECISION = 1e18;
-    uint256 public constant MAX_LIQUIDATION_THRESHOLD = 95e16; // 95%
-    uint256 public constant MIN_LIQUIDATION_THRESHOLD = 50e16; // 50%
-    uint256 public constant MAX_LIQUIDATION_BONUS = 25e16; // 25%
-    uint256 public constant MAX_BORROW_FACTOR = 90e16; // 90%
+        // For now, return 0 as this function needs proper hlToken integration
+        // TODO: Implement proper user asset balance calculation with hlToken contracts
+        return 0;
+    }
 
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // STATE VARIABLES
-    // ═══════════════════════════════════════════════════════════════════════════════════
+    /**
+     * @notice Get user's debt for a specific asset (borrow shares converted to amount)
+     */
+    function _getUserAssetDebt(
+        address user,
+        address asset
+    ) internal view returns (uint256) {
+        // For now, return 0 as the interface doesn't expose individual asset debt
+        // This would need to be implemented at the pool level or through token contracts
+        return 0;
+    }
 
-    IPriceOracle public immutable priceOracle;
-    address public immutable lendingPool;
+    /**
+     * @notice Get user's collateral amount for a specific asset
+     */
+    function _getUserAssetCollateral(
+        address user,
+        address asset
+    ) internal view returns (uint256) {
+        // For HyperLend, collateral is the same as balance (supplied assets)
+        return _getUserAssetBalance(user, asset);
+    }
 
-    // Asset risk parameters
-    mapping(address => RiskParameters) public assetRiskParams;
-    mapping(address => bool) public isAssetSupported;
-    address[] public supportedAssets;
+    /**
+     * @notice Get user's asset value in USD
+     */
+    function _getUserAssetValue(
+        address user,
+        address asset
+    ) internal view returns (uint256) {
+        uint256 balance = _getUserAssetBalance(user, asset);
+        if (balance == 0) return 0;
 
-    // Global risk parameters
-    uint256 public maxHealthFactorForLiquidation = 1e18; // 1.0
-    uint256 public minHealthFactorForBorrow = 105e16; // 1.05
-    uint256 public maxLiquidationRatio = 50e16; // 50%
+        uint256 price = priceOracle.getPrice(asset);
+        return balance.mulDiv(price, PRECISION);
+    }
 
-    // User position tracking
-    mapping(address => UserRiskData) public userRiskData;
-    mapping(address => uint256) public userLastUpdate;
+    /**
+     * @notice Get total supply for an asset from lending pool
+     */
+    function _getAssetTotalSupply(
+        address asset
+    ) internal view returns (uint256) {
+        IHyperLendPool pool = IHyperLendPool(lendingPool);
+        (uint256 totalSupply, , , , ) = pool.getMarketData(asset);
+        return totalSupply;
+    }
 
-    // Risk monitoring
-    address[] public riskUsers;
-    mapping(address => uint256) public riskUserIndex;
-    mapping(address => bool) public isUserTracked;
+    /**
+     * @notice Get total borrow for an asset from lending pool
+     */
+    function _getAssetTotalBorrow(
+        address asset
+    ) internal view returns (uint256) {
+        IHyperLendPool pool = IHyperLendPool(lendingPool);
+        (, uint256 totalBorrow, , , ) = pool.getMarketData(asset);
+        return totalBorrow;
+    }
 
-    // System-wide risk metrics
-    uint256 public totalCollateralValue;
-    uint256 public totalBorrowValue;
-    uint256 public averageHealthFactor;
-    uint256 public positionsAtRisk;
-    uint256 public lastSystemUpdate;
+    /**
+     * @notice Get total collateral value for an asset in USD
+     */
+    function _getAssetTotalCollateralValue(
+        address asset
+    ) internal view returns (uint256) {
+        uint256 totalSupply = _getAssetTotalSupply(asset);
+        if (totalSupply == 0) return 0;
 
-    // Risk level thresholds
-    uint256[5] public riskLevelThresholds = [
-        150e16, // Level 1: > 1.5
-        125e16, // Level 2: 1.25 - 1.5
-        110e16, // Level 3: 1.1 - 1.25
-        105e16, // Level 4: 1.05 - 1.1
-        100e16 // Level 5: 1.0 - 1.05
-    ];
+        uint256 price = priceOracle.getPrice(asset);
+        return totalSupply.mulDiv(price, PRECISION);
+    }
 
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // CONSTRUCTOR
-    // ═══════════════════════════════════════════════════════════════════════════════════
+    /**
+     * @notice Get total borrow value for an asset in USD
+     */
+    function _getAssetTotalBorrowValue(
+        address asset
+    ) internal view returns (uint256) {
+        uint256 totalBorrow = _getAssetTotalBorrow(asset);
+        if (totalBorrow == 0) return 0;
 
-    constructor(
-        address _priceOracle,
-        address _lendingPool,
-        uint256 _defaultLiquidationThreshold,
-        uint256 /* _defaultLiquidationBonus */,
-        uint256 _maxLiquidationRatio
-    ) {
+        uint256 price = priceOracle.getPrice(asset);
+        return totalBorrow.mulDiv(price, PRECISION);
+    }
+
+    /**
+     * @notice Get total value (collateral + borrow) for an asset in USD
+     */
+    function _getAssetTotalValue(
+        address asset
+    ) internal view returns (uint256) {
+        return
+            _getAssetTotalCollateralValue(asset) +
+            _getAssetTotalBorrowValue(asset);
+    }
+
+    /**
+     * @notice Calculate asset volatility score using price oracle data
+     */
+    function _getAssetVolatilityScore(
+        address asset
+    ) internal view returns (uint256) {
+        // Get price volatility from oracle if available
+        try priceOracle.getPriceVolatility(asset, 7 days) returns (
+            uint256 volatility
+        ) {
+            // Return volatility if oracle provides it, otherwise use default
+            return volatility > 0 ? volatility : _getDefaultVolatility(asset);
+        } catch {
+            return _getDefaultVolatility(asset);
+        }
+    }
+
+    /**
+     * @notice Get default volatility based on asset type
+     */
+    function _getDefaultVolatility(
+        address asset
+    ) internal pure returns (uint256) {
+        // Default volatilities based on asset characteristics
+        // In production, these could be configurable or fetched from external sources
+
+        // For simplicity, categorize by asset address patterns or use moderate defaults
+        if (asset == address(0)) {
+            return 30e16; // 30% for native tokens (STT)
+        }
+
+        // For stablecoins (would need proper asset registry in production)
+        // This is a simplified approach for production readiness
+        return 25e16; // 25% default moderate volatility
+    }
+
+    /**
+     * @notice Calculate asset liquidity score based on market activity
+     */
+    function _getAssetLiquidityScore(
+        address asset
+    ) internal view returns (uint256) {
+        IHyperLendPool pool = IHyperLendPool(lendingPool);
+
+        // Get market utilization as proxy for liquidity
+        (, , uint256 utilizationRate, , ) = pool.getMarketData(asset);
+
+        // Higher utilization generally means higher liquidity, but too high is bad
+        if (utilizationRate < 50e16) {
+            // Low utilization = lower liquidity
+            return 60e16 + utilizationRate.mulDiv(20e16, 50e16); // 60-80%
+        } else if (utilizationRate < 85e16) {
+            // Optimal utilization = high liquidity
+            return 80e16 + (utilizationRate - 50e16).mulDiv(15e16, 35e16); // 80-95%
+        } else {
+            // Very high utilization = reduced liquidity
+            return 95e16 - (utilizationRate - 85e16).mulDiv(25e16, 15e16); // 95-70%
+        }
+    }
+
+    /**
+     * @notice Internal function to set risk parameters without external checks
+     */
+    function _setRiskParametersInternal(
+        address asset,
+        uint256 liquidationThreshold,
+        uint256 liquidationBonus,
+        uint256 borrowFactor
+    ) internal {
+        require(asset != address(0), "RiskManager: Invalid asset");
         require(
-            _priceOracle != address(0),
-            "RiskManager: Invalid price oracle"
-        );
-        require(
-            _lendingPool != address(0),
-            "RiskManager: Invalid lending pool"
-        );
-        require(
-            _defaultLiquidationThreshold >= MIN_LIQUIDATION_THRESHOLD,
+            liquidationThreshold >= MIN_LIQUIDATION_THRESHOLD,
             "RiskManager: Threshold too low"
         );
         require(
-            _defaultLiquidationThreshold <= MAX_LIQUIDATION_THRESHOLD,
+            liquidationThreshold <= MAX_LIQUIDATION_THRESHOLD,
             "RiskManager: Threshold too high"
         );
-
-        priceOracle = IPriceOracle(_priceOracle);
-        lendingPool = _lendingPool;
-        maxLiquidationRatio = _maxLiquidationRatio;
-
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(ADMIN_ROLE, msg.sender);
-        _grantRole(RISK_ADMIN_ROLE, msg.sender);
-        _grantRole(POOL_ROLE, _lendingPool);
-
-        lastSystemUpdate = block.timestamp;
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // CORE RISK FUNCTIONS
-    // ═══════════════════════════════════════════════════════════════════════════════════
-
-    /**
-     * @notice Calculate user's health factor
-     */
-    function calculateHealthFactor(
-        address user
-    ) external view override returns (uint256 healthFactor) {
-        return _calculateHealthFactor(user);
-    }
-
-    /**
-     * @notice Get comprehensive user risk data
-     */
-    function getUserRiskData(
-        address user
-    ) external view override returns (UserRiskData memory riskData) {
-        // Recalculate current values
-        (uint256 totalCollateral, uint256 totalBorrow) = _getUserPositionValues(
-            user
+        require(
+            liquidationBonus <= MAX_LIQUIDATION_BONUS,
+            "RiskManager: Bonus too high"
         );
-        uint256 healthFactor = _calculateHealthFactor(user);
-        uint256 liquidationThreshold = _getUserLiquidationThreshold(user);
-        uint256 maxBorrowValue = totalCollateral.mulDiv(
-            liquidationThreshold,
-            PRECISION
+        require(
+            borrowFactor <= MAX_BORROW_FACTOR,
+            "RiskManager: Borrow factor too high"
         );
 
-        return
-            UserRiskData({
-                totalCollateralValue: totalCollateral,
-                totalBorrowValue: totalBorrow,
-                healthFactor: healthFactor,
-                liquidationThreshold: liquidationThreshold,
-                maxBorrowValue: maxBorrowValue,
-                isLiquidatable: healthFactor < maxHealthFactorForLiquidation
-            });
-    }
+        assetRiskParams[asset].liquidationThreshold = liquidationThreshold;
+        assetRiskParams[asset].liquidationBonus = liquidationBonus;
+        assetRiskParams[asset].borrowFactor = borrowFactor;
 
-    /**
-     * @notice Calculate maximum borrowing capacity
-     */
-    function getMaxBorrowAmount(
-        address user,
-        address asset
-    ) external view override returns (uint256 maxBorrowAmount) {
-        (uint256 totalCollateral, ) = _getUserPositionValues(user);
-        uint256 liquidationThreshold = _getUserLiquidationThreshold(user);
-        uint256 maxBorrowValue = totalCollateral.mulDiv(
-            liquidationThreshold,
-            PRECISION
-        );
-
-        uint256 assetPrice = priceOracle.getPrice(asset);
-        return maxBorrowValue.mulDiv(PRECISION, assetPrice);
-    }
-
-    /**
-     * @notice Calculate maximum withdrawal amount
-     */
-    function getMaxWithdrawAmount(
-        address user,
-        address asset
-    ) external view override returns (uint256 maxWithdrawAmount) {
-        (uint256 totalCollateral, uint256 totalBorrow) = _getUserPositionValues(
-            user
-        );
-
-        if (totalBorrow == 0) {
-            // No debt, can withdraw everything
-            return _getUserAssetBalance(user, asset);
-        }
-
-        uint256 liquidationThreshold = _getUserLiquidationThreshold(user);
-        uint256 requiredCollateral = totalBorrow.mulDiv(
-            PRECISION,
-            liquidationThreshold
-        );
-
-        if (totalCollateral <= requiredCollateral) {
-            return 0; // Cannot withdraw anything
-        }
-
-        uint256 excessCollateral = totalCollateral - requiredCollateral;
-        uint256 assetPrice = priceOracle.getPrice(asset);
-        uint256 maxWithdrawValue = excessCollateral;
-
-        return maxWithdrawValue.mulDiv(PRECISION, assetPrice);
-    }
-
-    /**
-     * @notice Calculate liquidation amounts
-     */
-    function calculateLiquidationAmounts(
-        address /* user */,
-        address debtAsset,
-        address collateralAsset,
-        uint256 debtAmount
-    )
-        external
-        view
-        override
-        returns (uint256 collateralAmount, uint256 liquidationBonus)
-    {
-        uint256 debtPrice = priceOracle.getPrice(debtAsset);
-        uint256 collateralPrice = priceOracle.getPrice(collateralAsset);
-
-        uint256 liquidationBonusRate = assetRiskParams[collateralAsset]
-            .liquidationBonus;
-
-        // Calculate debt value in USD
-        uint256 debtValueUSD = debtAmount.mulDiv(debtPrice, PRECISION);
-
-        // Calculate collateral to seize (including bonus)
-        uint256 collateralValueUSD = debtValueUSD.mulDiv(
-            PRECISION + liquidationBonusRate,
-            PRECISION
-        );
-        collateralAmount = collateralValueUSD.mulDiv(
-            PRECISION,
-            collateralPrice
-        );
-
-        // Calculate liquidation bonus
-        liquidationBonus = debtValueUSD
-            .mulDiv(liquidationBonusRate, PRECISION)
-            .mulDiv(PRECISION, collateralPrice);
-
-        return (collateralAmount, liquidationBonus);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // VALIDATION FUNCTIONS
-    // ═══════════════════════════════════════════════════════════════════════════════════
-
-    /**
-     * @notice Check if borrow operation is allowed
-     */
-    function isBorrowAllowed(
-        address user,
-        address asset,
-        uint256 amount
-    ) external view override returns (bool isAllowed, string memory reason) {
         if (!isAssetSupported[asset]) {
-            return (false, "Asset not supported");
+            isAssetSupported[asset] = true;
+            supportedAssets.push(asset);
         }
 
-        if (assetRiskParams[asset].isFrozen) {
-            return (false, "Asset is frozen");
-        }
-
-        // Check borrow cap
-        uint256 currentBorrow = _getAssetTotalBorrow(asset);
-        if (currentBorrow + amount > assetRiskParams[asset].borrowCap) {
-            return (false, "Borrow cap exceeded");
-        }
-
-        // Check health factor after borrow
-        uint256 newHealthFactor = _calculateHealthFactorAfterBorrow(
-            user,
+        emit RiskParametersUpdated(
             asset,
-            amount
+            liquidationThreshold,
+            liquidationBonus,
+            borrowFactor
         );
-        if (newHealthFactor < minHealthFactorForBorrow) {
-            return (false, "Health factor too low");
-        }
-
-        return (true, "");
     }
 
     /**
-     * @notice Check if withdrawal is allowed
+     * @notice Internal function to set asset frozen status
      */
-    function isWithdrawAllowed(
-        address user,
-        address asset,
-        uint256 amount
-    ) external view override returns (bool isAllowed, string memory reason) {
-        if (!isAssetSupported[asset]) {
-            return (false, "Asset not supported");
-        }
-
-        // Check if user has sufficient balance
-        uint256 userBalance = _getUserAssetBalance(user, asset);
-        if (amount > userBalance) {
-            return (false, "Insufficient balance");
-        }
-
-        // Check health factor after withdrawal
-        uint256 newHealthFactor = _calculateHealthFactorAfterWithdraw(
-            user,
-            asset,
-            amount
-        );
-        if (
-            newHealthFactor < minHealthFactorForBorrow &&
-            newHealthFactor != type(uint256).max
-        ) {
-            return (false, "Health factor too low");
-        }
-
-        return (true, "");
-    }
-
-    /**
-     * @notice Check if liquidation is allowed
-     */
-    function isLiquidationAllowed(
-        address user
-    ) external view override returns (bool isAllowed, uint256 healthFactor) {
-        healthFactor = _calculateHealthFactor(user);
-        isAllowed = healthFactor < maxHealthFactorForLiquidation;
-
-        return (isAllowed, healthFactor);
-    }
-
-    /**
-     * @notice Validate supply operation
-     */
-    function validateSupply(
-        address /* user */,
-        address asset,
-        uint256 amount
-    ) external view override returns (bool isValid, string memory reason) {
-        if (!isAssetSupported[asset]) {
-            return (false, "Asset not supported");
-        }
-
-        if (assetRiskParams[asset].isFrozen) {
-            return (false, "Asset is frozen");
-        }
-
-        // Check supply cap
-        uint256 currentSupply = _getAssetTotalSupply(asset);
-        if (currentSupply + amount > assetRiskParams[asset].supplyCap) {
-            return (false, "Supply cap exceeded");
-        }
-
-        return (true, "");
-    }
-
-    /**
-     * @notice Validate repay operation
-     */
-    function validateRepay(
-        address user,
-        address asset,
-        uint256 amount
-    ) external view override returns (bool isValid, string memory reason) {
-        if (!isAssetSupported[asset]) {
-            return (false, "Asset not supported");
-        }
-
-        uint256 userDebt = _getUserAssetDebt(user, asset);
-        if (amount > userDebt) {
-            return (false, "Repay amount exceeds debt");
-        }
-
-        return (true, "");
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════════════
-    // RISK ASSESSMENT
-    // ═══════════════════════════════════════════════════════════════════════════════════
-
-    /**
-     * @notice Get user's risk level (1-5 scale)
-     */
-    function getUserRiskLevel(
-        address user
-    ) external view override returns (uint8 riskLevel) {
-        uint256 healthFactor = _calculateHealthFactor(user);
-
-        if (healthFactor == type(uint256).max) return 1; // No debt
-
-        for (uint8 i = 0; i < 5; i++) {
-            if (healthFactor >= riskLevelThresholds[i]) {
-                return i + 1;
-            }
-        }
-
-        return 5; // Highest risk
-    }
-
-    /**
-     * @notice Get asset risk metrics
-     */
-    function getAssetRisk(
-        address asset
-    ) external pure override returns (AssetRisk memory assetRisk) {
-        uint256 collateralValue = _getAssetTotalCollateralValue(asset);
-        uint256 borrowValue = _getAssetTotalBorrowValue(asset);
-        uint256 utilizationRate = collateralValue > 0
-            ? borrowValue.mulDiv(PRECISION, collateralValue)
-            : 0;
-
-        return
-            AssetRisk({
-                asset: asset,
-                collateralValue: collateralValue,
-                borrowValue: borrowValue,
-                utilizationRate: utilizationRate,
-                volatilityScore: _getAssetVolatilityScore(asset),
-                liquidityScore: _getAssetLiquidityScore(asset)
-            });
-    }
-
-    /**
-     * @notice Get portfolio diversification score
-     */
-    function getPortfolioDiversification(
-        address user
-    ) external view override returns (uint256 diversificationScore) {
-        // Calculate Herfindahl-Hirschman Index for portfolio concentration
-        uint256[] memory assetShares = new uint256[](supportedAssets.length);
-        uint256 totalValue = 0;
-
-        for (uint256 i = 0; i < supportedAssets.length; i++) {
-            uint256 assetValue = _getUserAssetValue(user, supportedAssets[i]);
-            assetShares[i] = assetValue;
-            totalValue += assetValue;
-        }
-
-        if (totalValue == 0) return 100; // Perfectly diversified (no positions)
-
-        uint256 hhi = 0;
-        for (uint256 i = 0; i < assetShares.length; i++) {
-            uint256 share = assetShares[i].mulDiv(PRECISION, totalValue);
-            hhi += share.mulDiv(share, PRECISION);
-        }
-
-        // Convert HHI to diversification score (lower HHI = higher diversification)
-        diversificationScore = PRECISION - hhi;
-        return diversificationScore.mulDiv(100, PRECISION); // Convert to 0-100 scale
-    }
-
-    /**
-     * @notice Calculate value at risk (VaR)
-     */
-    function calculateValueAtRisk(
-        address user,
-        uint256 confidenceLevel,
-        uint256 timeHorizon
-    ) external view override returns (uint256 valueAtRisk) {
-        (uint256 totalCollateral, ) = _getUserPositionValues(user);
-
-        if (totalCollateral == 0) return 0;
-
-        // Simplified VaR calculation using historical volatility
-        uint256 portfolioVolatility = _calculatePortfolioVolatility(user);
-
-        // Z-score for confidence level (simplified)
-        uint256 zScore = _getZScore(confidenceLevel);
-
-        // VaR = Portfolio Value * Z-Score * Volatility * sqrt(Time Horizon)
-        uint256 timeAdjustment = Math.sqrt(timeHorizon * PRECISION);
-        valueAtRisk = totalCollateral
-            .mulDiv(zScore, PRECISION)
-            .mulDiv(portfolioVolatility, PRECISION)
-            .mulDiv(timeAdjustment, PRECISION);
-
-        return valueAtRisk;
-    }
-
-    /**
-     * @notice Get stress test results
-     */
-    function stressTest(
-        address user,
-        int256[] calldata priceShocks
-    )
-        external
-        view
-        override
-        returns (
-            uint256[] memory healthFactors,
-            bool[] memory wouldBeLiquidated
-        )
-    {
-        healthFactors = new uint256[](priceShocks.length);
-        wouldBeLiquidated = new bool[](priceShocks.length);
-
-        for (uint256 i = 0; i < priceShocks.length; i++) {
-            uint256 healthFactor = _calculateHealthFactorWithPriceShock(
-                user,
-                priceShocks[i]
-            );
-            healthFactors[i] = healthFactor;
-            wouldBeLiquidated[i] = healthFactor < maxHealthFactorForLiquidation;
-        }
-
-        return (healthFactors, wouldBeLiquidated);
+    function _setAssetFrozenInternal(address asset, bool frozen) internal {
+        require(isAssetSupported[asset], "RiskManager: Asset not supported");
+        assetRiskParams[asset].isFrozen = frozen;
     }
 }

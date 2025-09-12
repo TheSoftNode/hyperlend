@@ -272,4 +272,32 @@ interface IPriceOracle {
      * @param fallbackOracle Address of fallback oracle
      */
     function setFallbackOracle(address fallbackOracle) external;
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // ANALYTICS FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Get price volatility for an asset
+     * @param asset The asset address
+     * @param periods Number of periods to analyze
+     * @return volatility Price volatility (scaled by 1e18)
+     */
+    function getPriceVolatility(
+        address asset,
+        uint256 periods
+    ) external view returns (uint256 volatility);
+
+    /**
+     * @notice Get price correlation between two assets
+     * @param asset1 First asset address
+     * @param asset2 Second asset address
+     * @param periods Number of periods to analyze
+     * @return correlation Price correlation coefficient (scaled by 1e18)
+     */
+    function getPriceCorrelation(
+        address asset1,
+        address asset2,
+        uint256 periods
+    ) external view returns (int256 correlation);
 }

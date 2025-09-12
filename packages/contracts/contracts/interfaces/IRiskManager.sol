@@ -67,6 +67,23 @@ interface IRiskManager {
         uint256 timestamp
     );
 
+    event EmergencyAction(
+        string indexed action,
+        address indexed admin,
+        uint256 timestamp
+    );
+
+    event SystemParametersUpdated(
+        string indexed parameter,
+        address indexed admin
+    );
+
+    event RiskTrackingUpdated(
+        address indexed user,
+        bool isTracked,
+        uint256 timestamp
+    );
+
     // ═══════════════════════════════════════════════════════════════════════════════════
     // CORE FUNCTIONS
     // ═══════════════════════════════════════════════════════════════════════════════════

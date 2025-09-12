@@ -18,6 +18,65 @@ interface IInterestRateModel {
         uint256 kink
     );
 
+    event NetworkConfigUpdated(bool useMainnetConfig);
+
+    event AssetReserveFactorUpdated(
+        address indexed asset,
+        uint256 reserveFactor
+    );
+
+    event PriceOracleUpdated(
+        address indexed oldOracle,
+        address indexed newOracle
+    );
+
+    event VolatilityMultiplierUpdated(
+        address indexed asset,
+        uint256 volatility,
+        uint256 multiplier
+    );
+
+    event RateUpdateWithVolatility(
+        address indexed asset,
+        uint256 baseRate,
+        uint256 volatilityAdjustedRate,
+        uint256 volatilityMultiplier,
+        uint256 timestamp
+    );
+
+    event CircuitBreakerUpdated(
+        address indexed asset,
+        bool enabled,
+        uint256 maxRateChange,
+        uint256 emergencyThreshold
+    );
+
+    event EmergencyModeUpdated(
+        address indexed asset,
+        bool enabled,
+        uint256 rateCap
+    );
+
+    event RateSmoothingUpdated(
+        address indexed asset,
+        uint256 targetRate,
+        uint256 adjustmentSpeed
+    );
+
+    event AssetCorrelationUpdated(
+        address indexed asset1,
+        address indexed asset2,
+        int256 correlation
+    );
+
+    event CircuitBreakerTriggered(
+        address indexed asset,
+        string reason,
+        uint256 timestamp
+    );
+
+    event CircuitBreakerReset(address indexed asset, uint256 timestamp);
+
     // ═══════════════════════════════════════════════════════════════════════════════════
     // CORE FUNCTIONS
     // ═══════════════════════════════════════════════════════════════════════════════════

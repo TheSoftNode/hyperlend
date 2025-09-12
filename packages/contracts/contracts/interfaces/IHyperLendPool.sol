@@ -160,6 +160,38 @@ interface IHyperLendPool {
             uint256 lastUpdate
         );
 
+    // User position getters (public mappings)
+    function supplyShares(
+        address user,
+        address asset
+    ) external view returns (uint256);
+    function borrowShares(
+        address user,
+        address asset
+    ) external view returns (uint256);
+    function markets(
+        address asset
+    )
+        external
+        view
+        returns (
+            address asset_,
+            address hlToken,
+            address debtToken,
+            uint256 totalSupply,
+            uint256 totalBorrow,
+            uint256 borrowIndex,
+            uint256 supplyIndex,
+            uint256 lastUpdateTimestamp,
+            bool isActive,
+            bool isFrozen,
+            uint256 reserveFactor,
+            uint256 liquidationThreshold,
+            uint256 liquidationBonus,
+            uint256 borrowCap,
+            uint256 supplyCap
+        );
+
     // ═══════════════════════════════════════════════════════════════════════════════════
     // ADMIN FUNCTIONS
     // ═══════════════════════════════════════════════════════════════════════════════════
