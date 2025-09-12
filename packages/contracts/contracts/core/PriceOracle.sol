@@ -143,6 +143,28 @@ contract PriceOracle is IPriceOracle, AccessControl, Pausable {
     }
 
     /**
+     * @notice Maps an asset to its DIA Oracle price feed key
+     * @param asset The address of the asset (use address(0) for native STT)
+     * @param diaKey The DIA Oracle key (e.g., "STT/USD", "BTC/USD")
+     * @param decimals The number of decimals the asset has (e.g., 18 for ETH, 6 for USDC)
+     */
+    function setAssetDIAKey(
+        address asset,
+        string calldata diaKey,
+        uint256 decimals
+    ) external onlyRole(ADMIN_ROLE) {
+        require(asset != address(0), "Invalid asset");
+        require(bytes(diaKey).length > 0, "Invalid DIA key");
+        require(decimals <= 18, "Decimals too high");
+
+        assetToDIAKey[asset] = diaKey;
+        assetDecimals[asset] = decimals;
+
+        // This will now work because the event is declared
+        emit DIAKeySet(asset, diaKey, decimals);
+    }
+
+    /**
      * @notice Get prices for multiple assets
      */
     function getPrices(
@@ -354,23 +376,53 @@ contract PriceOracle is IPriceOracle, AccessControl, Pausable {
     }
 
     function _updateAssetPrice(address asset) internal {
-        if (!hasFeed[asset]) return;
+        if (!hasFeed[asset]) revert("PriceOracle: No feed for asset");
 
         PriceFeed memory feed = priceFeeds[asset];
-        if (!feed.isActive) return;
+        if (!feed.isActive) revert("PriceOracle: Feed inactive");
 
-        // This would typically fetch from external price feed
-        // For this implementation, we'll simulate with stored data
-        PriceEntry storage entry = priceData[asset];
+        // 1. Get the DIA key for this asset
+        string memory diaKey = assetToDIAKey[asset];
+        require(
+            bytes(diaKey).length > 0,
+            "PriceOracle: DIA key not set for asset"
+        );
 
-        // Update metrics
+        // 2. FETCH THE PRICE FROM DIA ORACLE
+        (uint256 price, uint256 timestamp) = diaOracle.getValue(diaKey); // <-- THE CRITICAL LINE
+
+        // 3. Validate the price is fresh
+        require(
+            block.timestamp - timestamp <= feed.heartbeat,
+            "PriceOracle: Price too stale"
+        );
+
+        // 4. Convert DIA's 8-decimals to internal 18-decimals
+        // Example: If DIA returns 1e8 (1.00000000), we need to make it 1e18
+        uint256 convertedPrice = price * (10 ** (18 - DIA_ORACLE_DECIMALS));
+
+        // 5. Check for circuit breaker
+        _checkCircuitBreaker(asset, convertedPrice);
+
+        // 6. Get the old price for the event
+        uint256 oldPrice = priceData[asset].price;
+
+        // 7. Update storage with the NEW, FRESH price
+        priceData[asset] = PriceEntry({
+            price: convertedPrice,
+            timestamp: timestamp, // Use the timestamp from DIA, not block.timestamp!
+            confidence: 100, // Or calculate this based on deviation
+            isValid: true,
+            isEmergency: false
+        });
+
+        // 8. Update history and metrics
+        _updatePriceHistory(asset, convertedPrice, block.timestamp);
         totalPriceUpdates++;
         _update24hMetrics();
 
-        // Store in history
-        _updatePriceHistory(asset, entry.price, block.timestamp);
-
-        emit PriceUpdated(asset, entry.price, entry.price, block.timestamp);
+        // 9. Emit event with the actual change
+        emit PriceUpdated(asset, oldPrice, convertedPrice, timestamp);
     }
 
     function _updatePriceHistory(

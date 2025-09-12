@@ -58,6 +58,8 @@ interface IPriceOracle {
         string reason
     );
 
+    event DIAKeySet(address indexed asset, string diaKey, uint256 decimals);
+
     // ═══════════════════════════════════════════════════════════════════════════════════
     // CORE FUNCTIONS
     // ═══════════════════════════════════════════════════════════════════════════════════

@@ -205,7 +205,7 @@ export async function waitForTransaction(
   txHash: string, 
   confirmations: number = 1,
   timeout: number = 300000 // 5 minutes
-): Promise<ethers.TransactionReceipt> {
+): Promise<any> {
   const startTime = Date.now();
   
   while (Date.now() - startTime < timeout) {
@@ -257,13 +257,13 @@ export async function getContractCreationBlock(contractAddress: string): Promise
  * Estimate gas with buffer
  */
 export async function estimateGasWithBuffer(
-  contract: ethers.Contract,
+  contract: any,
   methodName: string,
   args: any[],
   bufferPercent: number = 20
 ): Promise<bigint> {
   const estimated = await contract[methodName].estimateGas(...args);
-  const buffer = (estimated * BigInt(bufferPercent)) / 100n;
+  const buffer = (estimated * BigInt(bufferPercent)) / BigInt(100);
   return estimated + buffer;
 }
 
@@ -328,12 +328,12 @@ export function calculateCreate2Address(
   salt: string,
   bytecode: string
 ): string {
-  const create2Hash = ethers.solidityPackedKeccak256(
+  const create2Hash = ethers.utils.solidityKeccak256(
     ["bytes1", "address", "bytes32", "bytes32"],
-    ["0xff", deployer, salt, ethers.keccak256(bytecode)]
+    ["0xff", deployer, salt, ethers.utils.keccak256(bytecode)]
   );
   
-  return ethers.getAddress(`0x${create2Hash.slice(-40)}`);
+  return ethers.utils.getAddress(`0x${create2Hash.slice(-40)}`);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════
@@ -344,7 +344,7 @@ export function calculateCreate2Address(
  * Format ETH amount for display
  */
 export function formatEther(amount: bigint | string, decimals: number = 4): string {
-  const formatted = ethers.formatEther(amount);
+  const formatted = ethers.utils.formatEther(amount);
   const num = parseFloat(formatted);
   return num.toFixed(decimals);
 }
@@ -357,7 +357,7 @@ export function formatTokenAmount(
   tokenDecimals: number,
   displayDecimals: number = 4
 ): string {
-  const formatted = ethers.formatUnits(amount, tokenDecimals);
+  const formatted = ethers.utils.formatUnits(amount, tokenDecimals);
   const num = parseFloat(formatted);
   return num.toFixed(displayDecimals);
 }
@@ -444,7 +444,7 @@ export function addTimeToTimestamp(baseTimestamp: number, additionalSeconds: num
  */
 export function isValidAddress(address: string): boolean {
   try {
-    ethers.getAddress(address);
+    ethers.utils.getAddress(address);
     return true;
   } catch {
     return false;
@@ -468,8 +468,8 @@ export function isValidPrivateKey(privateKey: string): boolean {
  */
 export function isValidAmount(amount: string): boolean {
   try {
-    const parsed = ethers.parseEther(amount);
-    return parsed >= 0n;
+    const parsed = ethers.utils.parseEther(amount);
+    return parsed.gte(0);
   } catch {
     return false;
   }
@@ -483,8 +483,8 @@ export function isValidAmount(amount: string): boolean {
  * Calculate percentage
  */
 export function calculatePercentage(part: bigint, total: bigint): number {
-  if (total === 0n) return 0;
-  return Number((part * 10000n) / total) / 100; // 2 decimal places
+  if (total === BigInt(0)) return 0;
+  return Number((part * BigInt(10000)) / total) / 100; // 2 decimal places
 }
 
 /**
