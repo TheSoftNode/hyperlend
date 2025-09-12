@@ -638,4 +638,123 @@ contract MockPriceOracle is IPriceOracle, Ownable {
         // Note: In a real implementation, you'd set up a timer to recover the price
         // For testing, manual recovery is expected
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════
+    // MOCK IMPLEMENTATIONS FOR MISSING INTERFACE METHODS
+    // ═══════════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Get price volatility for an asset (mock implementation)
+     * @param asset The asset address
+     * @param periods Number of periods to analyze
+     * @return volatility Price volatility (scaled by 1e18)
+     */
+    function getPriceVolatility(
+        address asset,
+        uint256 periods
+    ) external view override returns (uint256 volatility) {
+        // Mock implementation: return a fixed volatility based on asset
+        // In tests, this can be overridden by setting volatilityFactor
+
+        if (volatilityFactor > 0) {
+            return volatilityFactor * 1e14; // Convert basis points to 1e18 scale
+        }
+
+        // Default mock volatilities for testing
+        if (assetPrices[asset].isValid) {
+            // Use price history if available to calculate mock volatility
+            uint256[] memory prices = priceHistory[asset];
+            if (prices.length >= 2 && periods > 0) {
+                uint256 maxPeriods = prices.length > periods
+                    ? periods
+                    : prices.length;
+                uint256 priceSum = 0;
+                uint256 maxPrice = 0;
+                uint256 minPrice = type(uint256).max;
+
+                // Calculate simple volatility from price range
+                for (
+                    uint256 i = prices.length - maxPeriods;
+                    i < prices.length;
+                    i++
+                ) {
+                    priceSum += prices[i];
+                    if (prices[i] > maxPrice) maxPrice = prices[i];
+                    if (prices[i] < minPrice) minPrice = prices[i];
+                }
+
+                if (maxPrice > minPrice && priceSum > 0) {
+                    uint256 avgPrice = priceSum / maxPeriods;
+                    uint256 range = maxPrice - minPrice;
+                    return (range * 1e18) / avgPrice; // Volatility as percentage of average
+                }
+            }
+
+            // Default mock volatility: 20% (0.2 * 1e18)
+            return 20e16;
+        }
+
+        return 0;
+    }
+
+    /**
+     * @notice Get price correlation between two assets (mock implementation)
+     * @param asset1 First asset address
+     * @param asset2 Second asset address
+     * @param periods Number of periods to analyze
+     * @return correlation Price correlation coefficient (scaled by 1e18)
+     */
+    function getPriceCorrelation(
+        address asset1,
+        address asset2,
+        uint256 periods
+    ) external view override returns (int256 correlation) {
+        // Mock implementation for testing
+
+        // Perfect correlation with self
+        if (asset1 == asset2) {
+            return 1e18; // 1.0 correlation
+        }
+
+        // If either asset doesn't have valid prices, return zero correlation
+        if (!assetPrices[asset1].isValid || !assetPrices[asset2].isValid) {
+            return 0;
+        }
+
+        // Mock correlation based on price similarities for testing
+        uint256[] memory prices1 = priceHistory[asset1];
+        uint256[] memory prices2 = priceHistory[asset2];
+
+        if (prices1.length >= 2 && prices2.length >= 2 && periods > 0) {
+            // Simple mock calculation: if both assets have similar price patterns,
+            // return positive correlation, otherwise moderate correlation
+
+            uint256 maxPeriods = periods;
+            if (prices1.length < maxPeriods) maxPeriods = prices1.length;
+            if (prices2.length < maxPeriods) maxPeriods = prices2.length;
+
+            if (maxPeriods >= 2) {
+                // Calculate price changes
+                uint256 start1 = prices1.length - maxPeriods;
+                uint256 start2 = prices2.length - maxPeriods;
+
+                uint256 change1 = prices1[prices1.length - 1] > prices1[start1]
+                    ? 1
+                    : 0;
+                uint256 change2 = prices2[prices2.length - 1] > prices2[start2]
+                    ? 1
+                    : 0;
+
+                // If both moved in same direction, high correlation, otherwise moderate
+                if (change1 == change2) {
+                    return 75e16; // 0.75 correlation
+                } else {
+                    return 25e16; // 0.25 correlation
+                }
+            }
+        }
+
+        // Default mock correlation for testing: moderate positive correlation (0.6)
+        return 60e16;
+    }
 }
