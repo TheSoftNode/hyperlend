@@ -17,7 +17,7 @@ library SomniaConstants {
 
     /// @notice Official DIA Oracle V2 on Somnia Testnet
     address public constant DIA_ORACLE_TESTNET =
-        0x9206296ea3aee3e6bdc07f7aaef14dfcf33d865d;
+        0x9206296Ea3aEE3E6bdC07F7AaeF14DfCf33d865D;
 
     // ═══════════════════════════════════════════════════════════════════════════════════
     // OFFICIAL TOKEN ADDRESSES (from official Somnia docs)
@@ -25,7 +25,7 @@ library SomniaConstants {
 
     /// @notice Official USDC on Somnia Mainnet
     address public constant USDC_MAINNET =
-        0x28bec7e30e6faee657a03e19bf1128aad7632a00;
+        0x28BEc7E30E6faee657a03e19Bf1128AaD7632A00;
 
     /// @notice Official USDT on Somnia Mainnet
     address public constant USDT_MAINNET =
@@ -104,7 +104,7 @@ library SomniaConstants {
 
     /// @notice USDT Adapter on Testnet
     address public constant USDT_ADAPTER_TESTNET =
-        0x67d2c2a87a17b7267a6dbb1a59575c0e9a1d1c3e;
+        0x67d2C2a87A17b7267a6DBb1A59575C0E9A1D1c3e;
 
     /// @notice USDC Adapter on Testnet
     address public constant USDC_ADAPTER_TESTNET =
