@@ -1243,8 +1243,9 @@ contract HyperLendPool is
      * @dev Required for native STT operations
      */
     receive() external payable {
-        // Accept STT transfers for protocol operations
-        // This enables native STT deposits and liquidations
+        revert(
+            "HyperLend: Direct STT transfers not allowed. Use supplySTT() or repaySTT()."
+        );
     }
 
     /**
