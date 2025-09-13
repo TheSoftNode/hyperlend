@@ -159,16 +159,16 @@ contract InterestRateModel is IInterestRateModel, AccessControl, Pausable {
         // Initialize network configuration based on testnet parameters (primary)
         // These values are from TESTNET_CONFIG in deployments/testnet/config.ts
         networkConfig = NetworkConfig({
-            baseRate: 200 * 1e16, // 2% base rate (from testnet config)
-            slope1: 1000 * 1e16, // 10% slope 1 (from testnet config)
-            slope2: 30000 * 1e16, // 300% slope 2 (from testnet config)
-            optimalUtilization: 8000 * 1e14, // 80% optimal utilization (from testnet config)
-            reserveFactor: 1000 * 1e14, // 10% reserve factor (from testnet config)
-            maxBorrowingRate: 10000 * 1e14, // 100% max borrowing rate (from testnet config)
-            protocolFeeRate: 300 * 1e14, // 3% protocol fee (from testnet config)
-            maxPriceDeviation: 1000 * 1e14, // 10% max deviation (from testnet config)
-            priceValidityPeriod: 3600, // 1 hour validity (from testnet config)
-            minimumUpdateInterval: 60 // 1 minute minimum update (from testnet config)
+            baseRate: 200 * 1e16,
+            slope1: 1000 * 1e16,
+            slope2: 30000 * 1e16,
+            optimalUtilization: 8000 * 1e14,
+            reserveFactor: 1000 * 1e14,
+            maxBorrowingRate: 10000 * 1e14,
+            protocolFeeRate: 300 * 1e14,
+            maxPriceDeviation: 1000 * 1e14,
+            priceValidityPeriod: 3600,
+            minimumUpdateInterval: 60
         });
 
         defaultParams = InterestRateParams({
@@ -479,29 +479,29 @@ contract InterestRateModel is IInterestRateModel, AccessControl, Pausable {
         if (useMainnetConfig) {
             // Mainnet configuration (from MAINNET_CONFIG in deployments/mainnet/config.ts)
             networkConfig = NetworkConfig({
-                baseRate: 100 * 1e16, // 1% base rate (more conservative for mainnet)
-                slope1: 800 * 1e16, // 8% slope 1
-                slope2: 25000 * 1e16, // 250% slope 2
-                optimalUtilization: 8500 * 1e14, // 85% optimal utilization
-                reserveFactor: 1500 * 1e14, // 15% reserve factor (higher for mainnet)
-                maxBorrowingRate: 10000 * 1e14, // 100% max borrowing rate
-                protocolFeeRate: 200 * 1e14, // 2% protocol fee (lower for mainnet)
-                maxPriceDeviation: 500 * 1e14, // 5% max deviation (stricter for mainnet)
-                priceValidityPeriod: 1800, // 30 minutes validity (stricter for mainnet)
-                minimumUpdateInterval: 30 // 30 seconds minimum update (faster for mainnet)
+                baseRate: 100 * 1e16,
+                slope1: 800 * 1e16,
+                slope2: 25000 * 1e16,
+                optimalUtilization: 8500 * 1e14,
+                reserveFactor: 1500 * 1e14,
+                maxBorrowingRate: 10000 * 1e14,
+                protocolFeeRate: 200 * 1e14,
+                maxPriceDeviation: 500 * 1e14,
+                priceValidityPeriod: 1800,
+                minimumUpdateInterval: 30
             });
         } else {
             // Testnet configuration (from TESTNET_CONFIG in deployments/testnet/config.ts)
             networkConfig = NetworkConfig({
-                baseRate: 200 * 1e16, // 2% base rate
-                slope1: 1000 * 1e16, // 10% slope 1
-                slope2: 30000 * 1e16, // 300% slope 2
-                optimalUtilization: 8000 * 1e14, // 80% optimal utilization
-                reserveFactor: 1000 * 1e14, // 10% reserve factor
-                maxBorrowingRate: 10000 * 1e14, // 100% max borrowing rate
-                protocolFeeRate: 300 * 1e14, // 3% protocol fee
-                maxPriceDeviation: 1000 * 1e14, // 10% max deviation
-                priceValidityPeriod: 3600, // 1 hour validity
+                baseRate: 200 * 1e16,
+                slope1: 1000 * 1e16,
+                slope2: 30000 * 1e16,
+                optimalUtilization: 8000 * 1e14,
+                reserveFactor: 1000 * 1e14,
+                maxBorrowingRate: 10000 * 1e14,
+                protocolFeeRate: 300 * 1e14,
+                maxPriceDeviation: 1000 * 1e14,
+                priceValidityPeriod: 3600,
                 minimumUpdateInterval: 60 // 1 minute minimum update
             });
         }

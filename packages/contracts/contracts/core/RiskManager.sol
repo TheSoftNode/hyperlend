@@ -1356,13 +1356,6 @@ contract RiskManager is IRiskManager, AccessControl, Pausable {
         uint8 category1 = _getAssetCategory(asset1, params1);
         uint8 category2 = _getAssetCategory(asset2, params2);
 
-        // Asset categories:
-        // 1 = Stablecoins (USDT, USDC)
-        // 2 = Major crypto (BTC)
-        // 3 = Native tokens (STT)
-        // 4 = Alt coins (ARB, SOL)
-        // 5 = Unknown/unsupported
-
         // Production-grade correlation matrix based on historical crypto correlations
         if (category1 == category2) {
             // Same category assets have higher correlation
@@ -1496,8 +1489,6 @@ contract RiskManager is IRiskManager, AccessControl, Pausable {
             }
         }
 
-        // Convert HHI to risk score (0-25 scale)
-        // Higher HHI = higher concentration = higher risk
         return hhi.mulDiv(25, PRECISION);
     }
 
@@ -1898,11 +1889,11 @@ contract RiskManager is IRiskManager, AccessControl, Pausable {
         // STT-like assets: High LTV (85%) and medium penalty (5%)
         // Matches STT config: LTV 75%, Liquidation Threshold 85%, Penalty 5%
         if (liquidationThreshold >= 85e16 && liquidationBonus == 5e16) {
-            return NATIVE_TOKEN_VOLATILITY; // 35% for native-like tokens
+            return NATIVE_TOKEN_VOLATILITY;
         }
 
         // Fallback for other configurations - use conservative defaults
-        return DEFAULT_VOLATILITY; // 20% fallback
+        return DEFAULT_VOLATILITY;
     }
 
     /**
